@@ -25,7 +25,7 @@ func pop(a *[]string) string {
 	return b
 }
 
-func resolve(domain string, server string) []net.IP {
+func resolve(domain string, server string) (answers []net.IP, nameserver string) {
 	client := dns.Client{}
 	msg := dns.Msg{}
 	msg.SetQuestion(domain+".", dns.TypeA)
@@ -37,13 +37,21 @@ func resolve(domain string, server string) []net.IP {
 	log.Println(rec.Answer)
 	if len(rec.Answer) != 0 {
 		var answers []net.IP
+		var cname string
 		for _, ans := range rec.Answer {
 			switch ans := ans.(type) {
 			case *dns.A:
 				answers = append(answers, net.IP(ans.A))
+			case *dns.CNAME:
+				log.Println("found CNAME", ans.Target, "for", domain)
+				cname = ans.Target[:len(ans.Target)-1]
 			}
 		}
-		return answers
+		// no ip answeres -> check the cname
+		if len(answers) == 0 {
+			return resolve(cname, root_server)
+		}
+		return answers, server
 	}
 
 	// if there is data in the additional section we take those
@@ -62,11 +70,12 @@ func resolve(domain string, server string) []net.IP {
 		if len(new_ns_ips) > 0 {
 			shuffle(&new_ns_ips)
 			var answers []net.IP
+			var used_server string
 			for len(answers) == 0 && len(new_ns_ips) != 0 {
 				// now we make it recursive
-				answers = resolve(domain, pop(&new_ns_ips))
+				answers, used_server = resolve(domain, pop(&new_ns_ips))
 			}
-			return answers
+			return answers, used_server
 		}
 		//if there are no ips already in the additional section continue with the NS records below
 	}
@@ -82,32 +91,33 @@ func resolve(domain string, server string) []net.IP {
 		}
 		if len(new_ns_names) <= 0 {
 			log.Println("No Nameserver found")
-			return nil
+			return nil, ""
 		}
 		shuffle(&new_ns_names)
 		var answers []net.IP
+		var used_server string
 		for len(answers) == 0 && len(new_ns_names) != 0 {
 			// now we need to resolve the name of the nameserver first
-			ns_answers := resolve(pop(&new_ns_names), root_server)
+			ns_answers, _ := resolve(pop(&new_ns_names), root_server)
 			log.Println("NS ANWSERS:", ns_answers[0])
 			if len(ns_answers) != 0 {
 				// now we make it recursive
-				answers = resolve(domain, ns_answers[0].String())
+				answers, used_server = resolve(domain, ns_answers[0].String())
 			}
 		}
-		return answers
+		return answers, used_server
 	}
-	return nil
+	return nil, ""
 }
 
 func main() {
 
-	domain := "raw.githubusercontent.com"
+	domain := "chat.openai.com"
 
 	t_start := time.Now()
-	answers := resolve(domain, root_server)
+	answers, used_server := resolve(domain, root_server)
 	t_end := time.Now()
 
-	log.Println("answers:", answers)
+	log.Println("answers:", answers, "auth nameserver:", used_server)
 	log.Println("request took:", t_end.UnixMilli()-t_start.UnixMilli(), "ms")
 }
