@@ -29,12 +29,11 @@ func resolve(domain string, server string) (answers []net.IP, nameserver string)
 	client := dns.Client{}
 	msg := dns.Msg{}
 	msg.SetQuestion(domain+".", dns.TypeA)
-	log.Println("questioning", server, "for", msg)
+	log.Println("questioning", server, "for", msg.Question[0].Name)
 	rec, _, err := client.Exchange(&msg, server+":53")
 	if err != nil {
 		log.Println(err)
 	}
-	log.Println(rec.Answer)
 	if len(rec.Answer) != 0 {
 		var answers []net.IP
 		var cname string
@@ -51,8 +50,10 @@ func resolve(domain string, server string) (answers []net.IP, nameserver string)
 		if len(answers) == 0 {
 			return resolve(cname, root_server)
 		}
+		log.Println("found answers", answers)
 		return answers, server
 	}
+	log.Println("no answers found")
 
 	// if there is data in the additional section we take those
 	// as nameservers are already resolved
@@ -63,10 +64,10 @@ func resolve(domain string, server string) (answers []net.IP, nameserver string)
 		for _, ans := range rec.Extra {
 			switch ans := ans.(type) {
 			case *dns.A:
-				log.Println("found next pos nameserver", ans.A.String())
 				new_ns_ips = append(new_ns_ips, ans.A.String())
 			}
 		}
+		log.Println("found next Nameservers", new_ns_ips)
 		if len(new_ns_ips) > 0 {
 			shuffle(&new_ns_ips)
 			var answers []net.IP
