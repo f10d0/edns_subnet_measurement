@@ -111,9 +111,62 @@ func resolve(domain string, server string) (answers []net.IP, nameserver string)
 	return nil, ""
 }
 
+func ecs_query(domain string, ip net.IP, subnet net.IPNet) (answers []net.IP) {
+
+	log.Println("questioning:", ip, "for:", domain, "with subnet:", subnet)
+
+	// Build the message sent to the Auth Server
+	msg := dns.Msg{}
+	msg.Id = dns.Id()
+	msg.RecursionDesired = true
+	msg.Question = make([]dns.Question, 1)
+	msg.Question[0] = dns.Question{domain + ".", dns.TypeA, dns.ClassINET}
+	msg.Extra = make([]dns.RR, 1)
+
+	// Creating OPT Record
+	opt := dns.OPT{}
+	opt.Hdr.Name = "."
+	opt.Hdr.Rrtype = dns.TypeOPT
+
+	// Adding the EDNS0 Subnet Functionality
+	e := dns.EDNS0_SUBNET{}
+	e.Code = dns.EDNS0SUBNET
+	e.Family = 1 // 1 for IPv4 source address, 2 for IPv6
+	maskSize, _ := subnet.Mask.Size()
+	e.SourceNetmask = uint8(maskSize)
+	e.SourceScope = 0
+	e.Address = subnet.IP
+
+	opt.Option = append(opt.Option, &e)
+	msg.Extra[0] = &opt
+
+	// Making the Query
+	rec, err := dns.Exchange(&msg, ip.String()+":53")
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+	// Get the returned IP Addresses from the Query
+	if len(rec.Answer) != 0 {
+		var answers []net.IP
+		for _, ans := range rec.Answer {
+			switch ans := ans.(type) {
+			case *dns.A:
+				answers = append(answers, net.IP(ans.A))
+			}
+		}
+		log.Println("found answers", answers)
+		return answers
+	}
+
+	return nil
+
+}
+
 func main() {
 
 	domain := "chat.openai.com"
+	_, subnet, _ := net.ParseCIDR("1.10.10.0/24")
 
 	t_start := time.Now()
 	answers, used_server := resolve(domain, root_server)
@@ -121,4 +174,12 @@ func main() {
 
 	log.Println("answers:", answers, "auth nameserver:", used_server)
 	log.Println("request took:", t_end.UnixMilli()-t_start.UnixMilli(), "ms")
+
+	t_start = time.Now()
+	ecsAnswers := ecs_query(domain, net.ParseIP(used_server), *subnet)
+	t_end = time.Now()
+
+	log.Println("ecs answers:", ecsAnswers, "for:", domain, "with:", subnet)
+	log.Println("request took:", t_end.UnixMilli()-t_start.UnixMilli(), "ms")
+
 }
