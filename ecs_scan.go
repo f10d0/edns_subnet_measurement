@@ -6,8 +6,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -16,11 +16,19 @@ import (
 const (
 	// recursive resolver
 	// https://www.iana.org/domains/root/servers
-	root_server         = "k.root-servers.net" // RIPE NCC 193.0.14.129 as we are in europe
-	enable_cache_lookup = true
+	ROOT_SERVER         = "k.root-servers.net" // RIPE NCC 193.0.14.129 as we are in europe
+	ENABLE_CACHE_LOOKUP = true
+	TOPLIST_FNAME       = "top-1m.csv"
+	SUBNETS_FNAME       = "subnets.txt"
+	NUMBER_OF_DOMAINS   = 100
 )
 
 var write_chan = make(chan []string, 4096)
+var domain_chan = make(chan string, 4096)
+var wg_scan sync.WaitGroup
+var stop_chan = make(chan interface{})
+
+var subnets = make([]*net.IPNet, 0)
 
 // dns_cache needs to be a tree (typical dns tree)
 //
@@ -190,24 +198,24 @@ func cache_lookup(domain string) (ips []net.IP, nss []string, cname string) {
 	return ips, last_node.rr.nss, ""
 }
 
-func shuffle[T ~string | net.IP](a *[]T) {
-	rand.Shuffle(len(*a), func(i, j int) { (*a)[i], (*a)[j] = (*a)[j], (*a)[i] })
+func shuffle[T ~string | interface{}](a []T) {
+	rand.Shuffle(len(a), func(i, j int) { (a)[i], (a)[j] = (a)[j], (a)[i] })
 }
 
-func pop[T ~string](a *[]T) T {
+func pop[T ~string | interface{}](a *[]T) T {
 	b := (*a)[len(*a)-1]
 	*a = (*a)[:len(*a)-1]
 	return b
 }
 
 func resolve(domain string, server string) (answers []net.IP, nameserver string) {
-	if enable_cache_lookup {
+	if ENABLE_CACHE_LOOKUP {
 		// before we do anything we check the cache
 		cache_ips, cache_nss, cache_cname := cache_lookup(domain)
 		// should the domain be cnamed we just go from there
 		if cache_cname != "" {
 			log.Println("cached cname found", domain, "points to", cache_cname)
-			return resolve(cache_cname, root_server)
+			return resolve(cache_cname, ROOT_SERVER)
 		}
 		// otherwise we question the cache if we know one of the ips of the provided nameservers
 		// theoretically we could call resolve again here with one randomly chosen nameserver,
@@ -232,7 +240,7 @@ func resolve(domain string, server string) (answers []net.IP, nameserver string)
 		} else if len(cache_nss) != 0 {
 			// in case we dont, we need to query the domain and therefore we need the resolved ns
 			ns := cache_nss[rand.Intn(len(cache_nss))]
-			ns_ips, _ := resolve(ns, root_server)
+			ns_ips, _ := resolve(ns, ROOT_SERVER)
 			if len(ns_ips) != 0 {
 				// we now know the ns ip but not the domain ip
 				server = ns_ips[rand.Intn(len(ns_ips))].String()
@@ -274,7 +282,7 @@ func resolve(domain string, server string) (answers []net.IP, nameserver string)
 		}
 		// no ip answers -> check the cname
 		if len(answers) == 0 {
-			return resolve(cname, root_server)
+			return resolve(cname, ROOT_SERVER)
 		}
 		log.Println("found answers", answers)
 		return answers, server
@@ -318,7 +326,8 @@ func resolve(domain string, server string) (answers []net.IP, nameserver string)
 		}
 		log.Println("found next Nameservers", new_ns_ips)
 		if len(new_ns_ips) > 0 {
-			shuffle(&new_ns_ips)
+			shuffle(new_ns_ips)
+			// TODO check: is this rly rng?
 			var answers []net.IP
 			var used_server string
 			for len(answers) == 0 && len(new_ns_ips) != 0 {
@@ -330,15 +339,15 @@ func resolve(domain string, server string) (answers []net.IP, nameserver string)
 		//if there are no ips already in the additional section continue with the NS records below
 	}
 
-	shuffle(&new_ns_names)
+	shuffle(new_ns_names)
 	answers = make([]net.IP, 0)
 	var used_server string
 	for len(answers) == 0 && len(new_ns_names) != 0 {
 		// now we need to resolve the nameserver first
 		needs_resolving := pop(&new_ns_names)
-		ns_answers, _ := resolve(needs_resolving, root_server)
+		ns_answers, _ := resolve(needs_resolving, ROOT_SERVER)
 		log.Println("NS ANSWERS:", ns_answers)
-		shuffle(&ns_answers) // choose nameserver randomly
+		shuffle(ns_answers) // choose nameserver randomly
 		//FIXME shuffle
 		if len(ns_answers) != 0 {
 			// now we make it recursive
@@ -351,7 +360,7 @@ func resolve(domain string, server string) (answers []net.IP, nameserver string)
 	return answers, used_server
 }
 
-func ecs_query(domain string, ip net.IP, subnet net.IPNet) (answers []net.IP) {
+func ecs_query(domain string, ip net.IP, subnet net.IPNet) (answers []net.IP, ecs_subnet *net.IPNet, esc_scope net.IPMask) {
 
 	log.Println("questioning:", ip, "for:", domain, "with subnet:", subnet)
 
@@ -384,7 +393,7 @@ func ecs_query(domain string, ip net.IP, subnet net.IPNet) (answers []net.IP) {
 	rec, err := dns.Exchange(&msg, ip.String()+":53")
 	if err != nil {
 		log.Println(err)
-		return nil
+		return nil, nil, nil
 	}
 	// Get the returned IP Addresses from the Query
 	if len(rec.Answer) != 0 {
@@ -396,21 +405,22 @@ func ecs_query(domain string, ip net.IP, subnet net.IPNet) (answers []net.IP) {
 			}
 		}
 		log.Println("found answers", answers)
-		return answers
+		// TODO check for ECS field
+		return answers, nil, nil
 	}
 
-	return nil
+	return nil, nil, nil
 
 }
 
-func request_multiple() {
+func request_ns() {
+	total_start_t := time.Now()
 	exec_sum := 0
 	exec_count := 0
 	exec_count_avg := 0
-	topfile_path := "top-1m.csv"
-	topfile, err := os.Open(topfile_path)
+	topfile, err := os.Open(TOPLIST_FNAME)
 	if err != nil {
-		log.Fatal("Unable to read input file " + topfile_path)
+		log.Fatal("Unable to read input file " + TOPLIST_FNAME)
 	}
 	defer topfile.Close()
 
@@ -418,17 +428,17 @@ func request_multiple() {
 	for {
 		records, err := csv_reader.Read()
 
-		if records == nil || exec_count > 100 {
+		if records == nil || exec_count > NUMBER_OF_DOMAINS {
 			break
 		}
 
 		if err != nil {
-			log.Fatal("Unable to parse file as CSV for "+topfile_path, err)
+			log.Fatal("Unable to parse file as CSV for "+TOPLIST_FNAME, err)
 		}
 
 		domain := records[1]
 		t_start := time.Now()
-		answers, used_server := resolve(domain, root_server)
+		answers, used_server := resolve(domain, ROOT_SERVER)
 		t_end := time.Now()
 
 		log.Println("domain:", domain, "answers:", answers, "auth nameserver:", used_server)
@@ -438,30 +448,16 @@ func request_multiple() {
 		if len(answers) != 0 {
 			exec_sum += int(diff_t)
 			exec_count_avg += 1
-
-			write_chan <- []string{strconv.Itoa(exec_count), domain, func() string {
-				var retstr string = ""
-				for i, answer := range answers {
-					retstr += answer.String()
-					if i < len(answers)-1 {
-						retstr += "|"
-					}
-				}
-				return retstr
-			}(), used_server}
-		} else {
-			write_chan <- []string{strconv.Itoa(exec_count), domain, "UNRESOLVED"}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	log.Println("avg took:", exec_sum/exec_count_avg, "ms, answer ratio:", float64(exec_count_avg)/float64(exec_count))
-	close(stop_chan)
+	total_end_t := time.Now()
+	log.Println("total took:", total_end_t.Unix()-total_start_t.Unix(), "s")
 }
 
-var stop_chan = make(chan interface{})
-
 func writeout() {
-	csvfile, err := os.Create("out.txt")
+	csvfile, err := os.Create("out.csv")
 	if err != nil {
 		panic(err)
 	}
@@ -485,9 +481,85 @@ func writeout() {
 	}
 }
 
+func read_subnets() {
+	subnetfile, err := os.Open(SUBNETS_FNAME)
+	if err != nil {
+		log.Fatal("Unable to read input file " + SUBNETS_FNAME)
+	}
+	defer subnetfile.Close()
+
+	csv_reader := csv.NewReader(subnetfile)
+	for {
+		subnet_csv, err := csv_reader.Read()
+
+		if subnet_csv == nil {
+			break
+		}
+
+		if err != nil {
+			log.Fatal("Unable to parse file as CSV for "+SUBNETS_FNAME, err)
+		}
+
+		if subnet_csv[0] == "" { // empty line
+			continue
+		}
+
+		subnet_str := subnet_csv[0]
+		_, subnet, err := net.ParseCIDR(subnet_str)
+		if err != nil {
+			log.Fatal("subnet not in CIDR notation")
+		}
+		subnets = append(subnets, subnet)
+	}
+}
+
+func read_toplist() {
+	defer wg_scan.Done()
+	topfile, err := os.Open(TOPLIST_FNAME)
+	if err != nil {
+		log.Fatal("Unable to read input file " + TOPLIST_FNAME)
+	}
+	defer topfile.Close()
+
+	csv_reader := csv.NewReader(topfile)
+	var loop_count int = 0
+	var domains []string
+	for {
+		records, err := csv_reader.Read()
+
+		if records == nil || loop_count > NUMBER_OF_DOMAINS {
+			break
+		}
+
+		if err != nil {
+			log.Fatal("Unable to parse file as CSV for "+TOPLIST_FNAME, err)
+		}
+
+		domains = append(domains, records[1])
+		loop_count += 1
+	}
+	shuffle(domains)
+	//TODO
+}
+
+func main_scan() {
+	// read list of subnets
+	read_subnets()
+	// for all subnets
+	for subnet := range subnets {
+		// read list of topdomains
+		go read_toplist()
+		// shuffle list
+		// scan(list.pop())
+		// writeout
+	}
+}
+
 func main() {
 	go writeout()
-	request_multiple()
+	//request_ns()
+	main_scan()
+	log.Println(subnets)
 
 	/*_, subnet, _ := net.ParseCIDR("1.10.10.0/24")*/
 
