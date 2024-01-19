@@ -14,16 +14,19 @@ import (
 	"github.com/miekg/dns"
 )
 
-const (
-	DEBUG                = true
-	ENABLE_CACHE_LOOKUP  = true
-	TOPLIST_FNAME        = "top-1m.csv"
-	SUBNETS_FNAME        = "subnets.txt"
-	NUMBER_OF_DOMAINS    = 10 // -1 to disable
-	SIMUL_ECS_REQS       = 100
-	SIMUL_NS_REQS        = 10
-	ROUTINE_STOP_TIMEOUT = 10
-)
+// config
+type cfg_db struct {
+	Debug                bool   `yaml:"debug"`
+	Enable_cache_lookup  bool   `yaml:"enable_cache_lookup"`
+	Toplist_fname        string `yaml:"toplist_fname"`
+	Subnets_fname        string `yaml:"subnets_fname"`
+	Number_of_domains    int    `yaml:"no_of_domains"`
+	Simul_ecs_reqs       int    `yaml:"simul_ecs_reqs"`
+	Simul_ns_reqs        int    `yaml:"simul_ns_reqs"`
+	Routine_stop_timeout int    `yaml:"routine_stop_timeout"`
+}
+
+var cfg cfg_db
 
 // effectively constant
 // https://www.iana.org/domains/root/servers
@@ -299,7 +302,7 @@ func on_blocklist(server net.IP) bool {
 }
 
 func resolve(domain string, server net.IP, cache_only bool) (answers []net.IP, nameserver net.IP) {
-	if ENABLE_CACHE_LOOKUP || cache_only {
+	if cfg.Enable_cache_lookup || cache_only {
 		// before we do anything we check the cache
 		cache_ips, cache_nss, cache_cname := cache_lookup(domain)
 		// should the domain be cnamed we just go from there
@@ -527,9 +530,9 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 
 func read_subnets() {
 	log.Println("reading subnets")
-	subnetfile, err := os.Open(SUBNETS_FNAME)
+	subnetfile, err := os.Open(cfg.Subnets_fname)
 	if err != nil {
-		log.Fatal("Unable to read input file " + SUBNETS_FNAME)
+		log.Fatal("Unable to read input file " + cfg.Subnets_fname)
 	}
 	defer subnetfile.Close()
 
@@ -542,7 +545,7 @@ func read_subnets() {
 		}
 
 		if err != nil {
-			log.Fatal("Unable to parse file as CSV for "+SUBNETS_FNAME, err)
+			log.Fatal("Unable to parse file as CSV for "+cfg.Subnets_fname, err)
 		}
 
 		if subnet_csv[0] == "" { // empty line
@@ -561,9 +564,9 @@ func read_subnets() {
 
 func read_toplist() {
 	log.Println("reading toplist")
-	topfile, err := os.Open(TOPLIST_FNAME)
+	topfile, err := os.Open(cfg.Toplist_fname)
 	if err != nil {
-		log.Fatal("Unable to read input file " + TOPLIST_FNAME)
+		log.Fatal("Unable to read input file " + cfg.Toplist_fname)
 	}
 	defer topfile.Close()
 
@@ -573,11 +576,11 @@ func read_toplist() {
 	for {
 		records, err := csv_reader.Read()
 
-		if records == nil || loop_count > NUMBER_OF_DOMAINS {
+		if records == nil || loop_count > cfg.Number_of_domains {
 			break
 		}
 		if err != nil {
-			log.Fatal("Unable to parse file as CSV for "+TOPLIST_FNAME, err)
+			log.Fatal("Unable to parse file as CSV for "+cfg.Toplist_fname, err)
 		}
 		loop_count++
 
@@ -618,10 +621,10 @@ func (worker *ns_worker) request() {
 
 func query_ns() {
 	log.Println("getting all the nameservers")
-	log.Println("starting", SIMUL_NS_REQS, "nameserver request routines")
+	log.Println("starting", cfg.Simul_ns_reqs, "nameserver request routines")
 	total_start_t := time.Now()
 	var ns_workers []*ns_worker = make([]*ns_worker, 0)
-	for i := 0; i < SIMUL_NS_REQS; i++ {
+	for i := 0; i < cfg.Simul_ns_reqs; i++ {
 		wg_scan.Add(1)
 		worker := &ns_worker{}
 		ns_workers = append(ns_workers, worker)
@@ -633,7 +636,7 @@ func query_ns() {
 			domain_chan <- domain_ns
 		}
 		log.Println("waiting to end ns request workers")
-		time.Sleep(ROUTINE_STOP_TIMEOUT * time.Second)
+		time.Sleep(time.Duration(cfg.Routine_stop_timeout) * time.Second)
 		log.Println("ending workers")
 		for _, worker := range ns_workers {
 			close(worker.stop_chan)
@@ -684,7 +687,7 @@ func query_ecs() {
 		log.Println("scanning subnet", i, subnet.String())
 		// start all the scanners
 		var scanners []*scan_worker = make([]*scan_worker, 0)
-		for i := 0; i < SIMUL_ECS_REQS; i++ {
+		for i := 0; i < cfg.Simul_ecs_reqs; i++ {
 			scanner := &scan_worker{}
 			scanners = append(scanners, scanner)
 			wg_scan.Add(1)
@@ -698,7 +701,7 @@ func query_ecs() {
 			}
 			// wait a gracious x seconds until all dns requests are complete
 			log.Println("waiting to end this round")
-			time.Sleep(ROUTINE_STOP_TIMEOUT * time.Second)
+			time.Sleep(time.Duration(cfg.Routine_stop_timeout) * time.Second)
 			log.Println("stopping scanner now")
 			for _, scanner := range scanners {
 				close(scanner.stop_scan)
