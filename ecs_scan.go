@@ -35,7 +35,7 @@ var cfg cfg_db
 var ROOT_SERVER net.IP = net.ParseIP("193.0.14.129") // RIPE NCC "k.root-servers.net" 193.0.14.129 as we are in europe
 
 var write_chan = make(chan *scan_item, 4096)
-var domain_chan = make(chan *domain_ns_pair, 4096)
+var domain_chan = make(chan *domain_ns_pair, 256)
 var wg_scan sync.WaitGroup
 var stop_write_chan = make(chan interface{})
 var domains []*domain_ns_pair = []*domain_ns_pair{}
@@ -73,7 +73,7 @@ func (item *scan_item) to_csv_strarr() []string {
 	if item.ans_subnet == nil {
 		ret_str[4] = ""
 	} else {
-		ret_str[4] = item.ans_subnet.Network()
+		ret_str[4] = item.ans_subnet.String()
 	}
 	if item.ans_scope == nil {
 		ret_str[5] = ""
@@ -527,9 +527,9 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 			for _, opt := range opt.Option {
 				if ecs, ok := opt.(*dns.EDNS0_SUBNET); ok {
 					// ECS information found
-					mask := net.CIDRMask(int(ecs.SourceNetmask), 8*len(ecs.Address))
+					mask := net.CIDRMask(int(ecs.SourceNetmask), 32)
 					ecs_subnet = &net.IPNet{IP: ecs.Address, Mask: mask}
-					ecs_scope = net.CIDRMask(int(ecs.SourceScope), 8*len(ecs.Address))
+					ecs_scope = net.CIDRMask(int(ecs.SourceScope), 32)
 					return answers, ecs_subnet, ecs_scope
 				}
 			}
