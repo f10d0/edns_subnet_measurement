@@ -587,7 +587,7 @@ func read_toplist() {
 	for {
 		records, err := csv_reader.Read()
 
-		if records == nil || loop_count > cfg.Number_of_domains {
+		if records == nil || cfg.Number_of_domains != -1 && loop_count > cfg.Number_of_domains {
 			break
 		}
 		if err != nil {
