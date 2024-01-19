@@ -39,6 +39,7 @@ var domain_chan = make(chan *domain_ns_pair, 256)
 var wg_scan sync.WaitGroup
 var stop_write_chan = make(chan interface{})
 var domains []*domain_ns_pair = []*domain_ns_pair{}
+var domains_mu sync.Mutex
 var subnets = make([]*net.IPNet, 0)
 
 func load_config() {
@@ -388,7 +389,7 @@ func resolve(domain string, server net.IP, cache_only bool) (answers []net.IP, n
 				answers = append(answers, ans.A)
 				cache_update_a(domain, ans.A)
 			case *dns.CNAME:
-				log.Println("found CNAME", ans.Target, "for", domain)
+				//log.Println("found CNAME", ans.Target, "for", domain)
 				cname = ans.Target[:len(ans.Target)-1]
 				cache_update_cname(domain, cname)
 			}
@@ -596,10 +597,12 @@ func read_toplist() {
 		loop_count++
 
 		domain := records[1]
+		domains_mu.Lock()
 		domains = append(domains, &domain_ns_pair{
 			domain: domain,
 			nsip:   nil, // for now we dont have nothing
 		})
+		domains_mu.Unlock()
 	}
 	log.Println("read", len(domains), "toplist entries")
 }
@@ -615,11 +618,11 @@ func (worker *ns_worker) request() {
 		select {
 		case domain_ns := <-domain_chan:
 			domain := domain_ns.domain
-			t_start := time.Now()
+			//t_start := time.Now()
 			answers, used_server := resolve(domain, ROOT_SERVER, false)
-			t_end := time.Now()
-			diff_t := t_end.UnixMilli() - t_start.UnixMilli()
-			log.Println("domain:", domain, "answers:", answers, "auth nameserver:", used_server, "took:", diff_t, "ms")
+			//t_end := time.Now()
+			//diff_t := t_end.UnixMilli() - t_start.UnixMilli()
+			//log.Println("domain:", domain, "answers:", answers, "auth nameserver:", used_server, "took:", diff_t, "ms")
 			if len(answers) == 0 {
 				continue
 			}
