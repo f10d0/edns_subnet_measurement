@@ -15,13 +15,14 @@ import (
 )
 
 const (
-	DEBUG               = true
-	ENABLE_CACHE_LOOKUP = true
-	TOPLIST_FNAME       = "top-1m.csv"
-	SUBNETS_FNAME       = "subnets.txt"
-	NUMBER_OF_DOMAINS   = 10 // -1 to disable
-	SIMUL_ESC_REQS      = 100
-	SIMUL_NS_REQS       = 10
+	DEBUG                = true
+	ENABLE_CACHE_LOOKUP  = true
+	TOPLIST_FNAME        = "top-1m.csv"
+	SUBNETS_FNAME        = "subnets.txt"
+	NUMBER_OF_DOMAINS    = 10 // -1 to disable
+	SIMUL_ECS_REQS       = 100
+	SIMUL_NS_REQS        = 10
+	ROUTINE_STOP_TIMEOUT = 10
 )
 
 // effectively constant
@@ -34,7 +35,6 @@ var wg_scan sync.WaitGroup
 var stop_write_chan = make(chan interface{})
 var domains []*domain_ns_pair = []*domain_ns_pair{}
 var subnets = make([]*net.IPNet, 0)
-var scanners []*scan_worker = make([]*scan_worker, 0)
 
 type domain_ns_pair struct {
 	domain string
@@ -78,6 +78,33 @@ func (item *scan_item) to_csv_strarr() []string {
 	return ret_str
 }
 
+func writeout() {
+	csvfile, err := os.Create("scan.csv.gz")
+	if err != nil {
+		panic(err)
+	}
+	defer csvfile.Close()
+
+	zip_writer := gzip.NewWriter(csvfile)
+	defer zip_writer.Flush()
+
+	writer := csv.NewWriter(zip_writer)
+	writer.Comma = ';'
+	defer writer.Flush()
+
+	for {
+		select {
+		case item := <-write_chan:
+			out_str := item.to_csv_strarr()
+			//log.Println("writing to file:", out_str)
+			writer.Write(out_str)
+			//writer.Flush()
+		case <-stop_write_chan:
+			return
+		}
+	}
+}
+
 // dns_cache needs to be a tree (typical dns tree)
 //
 //	        .
@@ -103,7 +130,15 @@ var cache_root cache_node = cache_node{
 		nss: make([]string, 0),
 	},
 }
+
 var tree_mu sync.Mutex
+
+func (parent *cache_node) preorder(level int) {
+	log.Println("LEVEL:", level, "| name:", parent.node_name, "| nss:", parent.rr.nss, "| ips", parent.rr.ips)
+	for _, child := range parent.next {
+		child.preorder(level + 1)
+	}
+}
 
 func create_node(domain string) *cache_node {
 	domain = strings.ToLower(domain)
@@ -176,16 +211,10 @@ func get_node(domain string) (node *cache_node, final bool) {
 	return cur_node, true
 }
 
-func preorder(parent *cache_node, level int) {
-	log.Println("LEVEL:", level, "| name:", parent.node_name, "| nss:", parent.rr.nss, "| ips", parent.rr.ips)
-	for _, child := range parent.next {
-		preorder(child, level+1)
-	}
-}
-
 func cache_update_ns(related_domain string, nameserver string) {
 	related_domain = strings.ToLower(related_domain)
 	nameserver = strings.ToLower(nameserver)
+	tree_mu.Lock()
 	//log.Println("updating cache for domain", related_domain, "on NS to", nameserver)
 	to_update_node := create_node(related_domain)
 	contains := false
@@ -199,18 +228,22 @@ func cache_update_ns(related_domain string, nameserver string) {
 	if !contains {
 		to_update_node.rr.nss = append(to_update_node.rr.nss, nameserver)
 	}
+	tree_mu.Unlock()
 }
 
 func cache_flush_ns(related_domain string) {
 	//log.Println("flushing ns for", related_domain)
 	related_domain = strings.ToLower(related_domain)
+	tree_mu.Lock()
 	to_update_node := create_node(related_domain)
 	to_update_node.rr.nss = make([]string, 0)
+	tree_mu.Unlock()
 }
 
 func cache_update_a(domain string, ip net.IP) {
 	domain = strings.ToLower(domain)
 	//log.Println("updating cache for domain", domain, "on A to", ip)
+	tree_mu.Lock()
 	to_update_node := create_node(domain)
 	contains := false
 	for _, it_ip := range to_update_node.rr.ips {
@@ -222,13 +255,16 @@ func cache_update_a(domain string, ip net.IP) {
 	if !contains {
 		to_update_node.rr.ips = append(to_update_node.rr.ips, ip)
 	}
+	tree_mu.Unlock()
 }
 
 func cache_update_cname(domain string, cname string) {
 	domain = strings.ToLower(domain)
 	cname = strings.ToLower(cname)
+	tree_mu.Lock()
 	to_update_node := create_node(domain)
 	to_update_node.rr.cname = cname
+	tree_mu.Unlock()
 }
 
 func cache_lookup(domain string) (ips []net.IP, nss []string, cname string) {
@@ -317,6 +353,7 @@ func resolve(domain string, server net.IP, cache_only bool) (answers []net.IP, n
 	}
 
 	client := dns.Client{}
+	client.Timeout = 5 * time.Second
 	msg := dns.Msg{}
 	msg.SetQuestion(domain+".", dns.TypeA)
 	//log.Println("questioning", server, "for", msg.Question[0].Name)
@@ -422,10 +459,12 @@ func resolve(domain string, server net.IP, cache_only bool) (answers []net.IP, n
 	return answers, used_server
 }
 
-func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP, ecs_subnet *net.IPNet, esc_scope net.IPMask) {
+func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP, ecs_subnet *net.IPNet, ecs_scope net.IPMask) {
 
 	log.Println("ecs questioning:", nsip, "for:", domain, "with subnet:", subnet)
 
+	client := dns.Client{}
+	client.Timeout = 5 * time.Second
 	// Build the message sent to the Auth Server
 	msg := dns.Msg{}
 	msg.Id = dns.Id()
@@ -452,14 +491,14 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 	msg.Extra[0] = &opt
 
 	// Making the Query
-	rec, err := dns.Exchange(&msg, nsip.String()+":53")
+	rec, _, err := client.Exchange(&msg, nsip.String()+":53")
 	if err != nil {
 		log.Println(err)
 		return nil, nil, nil
 	}
+	answers = make([]net.IP, 0)
 	// Get the returned IP Addresses from the Query
 	if len(rec.Answer) != 0 {
-		var answers []net.IP
 		for _, ans := range rec.Answer {
 			switch ans := ans.(type) {
 			case *dns.A:
@@ -467,62 +506,23 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 			}
 		}
 		log.Println("ecs found answers", answers)
-		// TODO check for ECS field
-		return answers, nil, nil
+	}
+	for _, rr := range rec.Extra {
+		if opt, ok := rr.(*dns.OPT); ok {
+			// Iterate over the EDNS0 options
+			for _, opt := range opt.Option {
+				if ecs, ok := opt.(*dns.EDNS0_SUBNET); ok {
+					// ECS information found
+					mask := net.CIDRMask(int(ecs.SourceNetmask), 8*len(ecs.Address))
+					ecs_subnet = &net.IPNet{IP: ecs.Address, Mask: mask}
+					ecs_scope = net.CIDRMask(int(ecs.SourceScope), 8*len(ecs.Address))
+					return answers, ecs_subnet, ecs_scope
+				}
+			}
+		}
 	}
 
 	return nil, nil, nil
-}
-
-func request_ns() {
-	log.Println("getting all the nameservers")
-	total_start_t := time.Now()
-	exec_sum := 0
-	exec_count_avg := 0
-	for _, domain_ns := range domains {
-		domain := domain_ns.domain
-		t_start := time.Now()
-		answers, used_server := resolve(domain, ROOT_SERVER, false)
-		t_end := time.Now()
-		diff_t := t_end.UnixMilli() - t_start.UnixMilli()
-		log.Println("domain:", domain, "answers:", answers, "auth nameserver:", used_server, "took:", diff_t, "ms")
-		if len(answers) == 0 {
-			continue
-		}
-		domain_ns.nsip = used_server
-		exec_sum += int(diff_t)
-		exec_count_avg += 1
-	}
-	log.Println("ns-req, avg took:", exec_sum/exec_count_avg, "ms, answer ratio:", float64(exec_count_avg)/float64(len(domains)))
-	total_end_t := time.Now()
-	log.Println("ns-req, total took:", total_end_t.Unix()-total_start_t.Unix(), "s")
-}
-
-func writeout() {
-	csvfile, err := os.Create("scan.csv.gz")
-	if err != nil {
-		panic(err)
-	}
-	defer csvfile.Close()
-
-	zip_writer := gzip.NewWriter(csvfile)
-	defer zip_writer.Flush()
-
-	writer := csv.NewWriter(zip_writer)
-	writer.Comma = ';'
-	defer writer.Flush()
-
-	for {
-		select {
-		case item := <-write_chan:
-			out_str := item.to_csv_strarr()
-			//log.Println("writing to file:", out_str)
-			writer.Write(out_str)
-			writer.Flush()
-		case <-stop_write_chan:
-			return
-		}
-	}
 }
 
 func read_subnets() {
@@ -587,23 +587,61 @@ func read_toplist() {
 			nsip:   nil, // for now we dont have nothing
 		})
 	}
-	log.Println("read", len(domains), "functioning toplist entries")
+	log.Println("read", len(domains), "toplist entries")
 }
 
-func top_list_to_chan() {
+type ns_worker struct {
+	stop_chan chan interface{}
+}
+
+func (worker *ns_worker) request() {
 	defer wg_scan.Done()
-	shuffle(domains)
-	for _, domain := range domains {
-		domain_chan <- domain
+	worker.stop_chan = make(chan interface{})
+	for {
+		select {
+		case domain_ns := <-domain_chan:
+			domain := domain_ns.domain
+			t_start := time.Now()
+			answers, used_server := resolve(domain, ROOT_SERVER, false)
+			t_end := time.Now()
+			diff_t := t_end.UnixMilli() - t_start.UnixMilli()
+			log.Println("domain:", domain, "answers:", answers, "auth nameserver:", used_server, "took:", diff_t, "ms")
+			if len(answers) == 0 {
+				continue
+			}
+			domain_ns.nsip = used_server
+		case <-worker.stop_chan:
+			return
+		}
 	}
-	// wait a gracious 10 seconds to wait for all the dns responses
-	// TODO set timeout in ecs_query
-	log.Println("waiting to end this round")
-	time.Sleep(10 * time.Second)
-	log.Println("stopping scanner now")
-	for _, scanner := range scanners {
-		close(scanner.stop_scan)
+}
+
+func query_ns() {
+	log.Println("getting all the nameservers")
+	log.Println("starting", SIMUL_NS_REQS, "nameserver request routines")
+	total_start_t := time.Now()
+	var ns_workers []*ns_worker = make([]*ns_worker, 0)
+	for i := 0; i < SIMUL_NS_REQS; i++ {
+		wg_scan.Add(1)
+		worker := &ns_worker{}
+		ns_workers = append(ns_workers, worker)
+		go worker.request()
 	}
+	go func() {
+		shuffle(domains)
+		for _, domain_ns := range domains {
+			domain_chan <- domain_ns
+		}
+		log.Println("waiting to end ns request workers")
+		time.Sleep(ROUTINE_STOP_TIMEOUT * time.Second)
+		log.Println("ending workers")
+		for _, worker := range ns_workers {
+			close(worker.stop_chan)
+		}
+	}()
+	wg_scan.Wait()
+	total_end_t := time.Now()
+	log.Println("ns-req, total took:", total_end_t.Unix()-total_start_t.Unix(), "s")
 }
 
 type scan_worker struct {
@@ -636,40 +674,53 @@ func (scanner *scan_worker) scan(subnet *net.IPNet) {
 	}
 }
 
-func main_scan() {
+func query_ecs() {
 	log.Println("starting main scan")
 	go writeout()
 	// read list of subnets
 	read_subnets()
-	// TODO we may flush the cache tree at this point
 	// for all subnets
-	for _, subnet := range subnets {
-		log.Println("scanning first subnet", subnet.String())
+	for i, subnet := range subnets {
+		log.Println("scanning subnet", i, subnet.String())
 		// start all the scanners
-		for i := 0; i < SIMUL_ESC_REQS; i++ {
+		var scanners []*scan_worker = make([]*scan_worker, 0)
+		for i := 0; i < SIMUL_ECS_REQS; i++ {
 			scanner := &scan_worker{}
 			scanners = append(scanners, scanner)
 			wg_scan.Add(1)
 			go scanner.scan(subnet)
 		}
 		// read list of topdomains
-		wg_scan.Add(1)
-		go top_list_to_chan()
+		go func() {
+			shuffle(domains)
+			for _, domain := range domains {
+				domain_chan <- domain
+			}
+			// wait a gracious x seconds until all dns requests are complete
+			log.Println("waiting to end this round")
+			time.Sleep(ROUTINE_STOP_TIMEOUT * time.Second)
+			log.Println("stopping scanner now")
+			for _, scanner := range scanners {
+				close(scanner.stop_scan)
+			}
+		}()
 		wg_scan.Wait()
-		scanners = make([]*scan_worker, 0)
 	}
 }
 
 func main() {
 	log.Println(("starting program"))
 	read_toplist()
-	request_ns()
-	main_scan()
+	query_ns()
+	// flush the dns cache tree as we dont need it any longer
+	// all the relevant nameservers are stored as domain_ns_pair
+	cache_root.next = make([]*cache_node, 0)
+	query_ecs()
 	close(stop_write_chan)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(2 * time.Second) // wait to write all data completely to file
 	//debug
 	// log.Println("<=====PREORDER CACHE TREE=====")
-	// preorder(&cache_root, 0)
+	// cache_root.preorder(0)
 	// log.Println("========>")
 	log.Println("program end")
 }
