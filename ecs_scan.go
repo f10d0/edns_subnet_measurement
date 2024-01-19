@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ilyakaznacheev/cleanenv"
 	"github.com/miekg/dns"
 )
 
@@ -38,6 +39,14 @@ var wg_scan sync.WaitGroup
 var stop_write_chan = make(chan interface{})
 var domains []*domain_ns_pair = []*domain_ns_pair{}
 var subnets = make([]*net.IPNet, 0)
+
+func load_config() {
+	log.Println("loading config")
+	err := cleanenv.ReadConfig("config.yml", &cfg)
+	if err != nil {
+		panic(err)
+	}
+}
 
 type domain_ns_pair struct {
 	domain string
@@ -713,6 +722,7 @@ func query_ecs() {
 
 func main() {
 	log.Println(("starting program"))
+	load_config()
 	read_toplist()
 	query_ns()
 	// flush the dns cache tree as we dont need it any longer
