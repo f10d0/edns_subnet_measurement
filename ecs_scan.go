@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -72,12 +73,13 @@ func (item *scan_item) to_csv_strarr() []string {
 	if item.ans_subnet == nil {
 		ret_str[4] = ""
 	} else {
-		ret_str[4] = item.ans_subnet.String()
+		ret_str[4] = item.ans_subnet.Network()
 	}
 	if item.ans_scope == nil {
 		ret_str[5] = ""
 	} else {
-		ret_str[5] = item.ans_scope.String()
+		ones, _ := item.ans_scope.Size()
+		ret_str[5] = strconv.Itoa(ones)
 	}
 	ips := ""
 	for i, ip := range item.ans_ips {
@@ -473,7 +475,7 @@ func resolve(domain string, server net.IP, cache_only bool) (answers []net.IP, n
 
 func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP, ecs_subnet *net.IPNet, ecs_scope net.IPMask) {
 
-	log.Println("ecs questioning:", nsip, "for:", domain, "with subnet:", subnet)
+	// log.Println("ecs questioning:", nsip, "for:", domain, "with subnet:", subnet)
 
 	client := dns.Client{}
 	client.Timeout = 5 * time.Second
@@ -517,7 +519,7 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 				answers = append(answers, net.IP(ans.A))
 			}
 		}
-		log.Println("ecs found answers", answers)
+		//log.Println("ecs found answers", answers)
 	}
 	for _, rr := range rec.Extra {
 		if opt, ok := rr.(*dns.OPT); ok {
@@ -729,8 +731,9 @@ func main() {
 	// all the relevant nameservers are stored as domain_ns_pair
 	cache_root.next = make([]*cache_node, 0)
 	query_ecs()
+	time.Sleep(5 * time.Second)
 	close(stop_write_chan)
-	time.Sleep(2 * time.Second) // wait to write all data completely to file
+	time.Sleep(5 * time.Second) // wait to write all data completely to file
 	//debug
 	// log.Println("<=====PREORDER CACHE TREE=====")
 	// cache_root.preorder(0)
