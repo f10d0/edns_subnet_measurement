@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +20,6 @@ import (
 // config
 type cfg_db struct {
 	Debug                bool   `yaml:"debug"`
-	Enable_cache_lookup  bool   `yaml:"enable_cache_lookup"`
 	Toplist_fname        string `yaml:"toplist_fname"`
 	Subnets_fname        string `yaml:"subnets_fname"`
 	Number_of_domains    int    `yaml:"no_of_domains"`
@@ -35,6 +35,7 @@ var cfg cfg_db
 var ROOT_SERVER net.IP = net.ParseIP("193.0.14.129") // RIPE NCC "k.root-servers.net" 193.0.14.129 as we are in europe
 
 var write_chan = make(chan *scan_item, 4096)
+var write_ns_chan = make(chan *domain_ns_pair, 4096)
 var domain_chan = make(chan *domain_ns_pair, 256)
 var wg_scan sync.WaitGroup
 var stop_write_chan = make(chan interface{})
@@ -120,6 +121,35 @@ func writeout() {
 	}
 }
 
+func writeout_ns() {
+	csvfile, err := os.Create("nameserver.csv.gz")
+	if err != nil {
+		panic(err)
+	}
+	defer csvfile.Close()
+
+	zip_writer := gzip.NewWriter(csvfile)
+	defer zip_writer.Flush()
+
+	writer := csv.NewWriter(zip_writer)
+	writer.Comma = ';'
+	defer writer.Flush()
+	log.Println("writer for ns entries started")
+	for {
+		select {
+		case pair := <-write_ns_chan:
+			log.Println("write_ns_chan", pair)
+			var outarr []string = make([]string, 2)
+			outarr[0] = pair.domain
+			outarr[1] = pair.nsip.String()
+			writer.Write(outarr)
+			writer.Flush()
+		case <-stop_write_chan:
+			return
+		}
+	}
+}
+
 // dns_cache needs to be a tree (typical dns tree)
 //
 //	        .
@@ -198,10 +228,23 @@ func create_node(domain string) *cache_node {
 func get_node(domain string) (node *cache_node, final bool) {
 	domain = strings.ToLower(domain)
 	// we get the node iteratively
-	//log.Println("searching for node", domain)
 	domain_split := strings.Split(domain, ".")
 	next_node_name := pop(&domain_split)
 	cur_node := &cache_root
+	last_ns_node := &cache_root
+	// okay hear me out: there is the possibility that a node that is deeper in the
+	// tree doesnt provide us with any useful information at all
+	// e.g. the following case
+	//                    .
+	//                  /   \
+	//                uy    org
+	//              /    \
+	//            com
+	//           /
+	//      random
+	// imagine we have received nameserver information for uy. but the domain we want to
+	// resolve is google.com.uy. -> without any further checking we would end up at
+	// com.uy. which doesnt help us, so we need to check each node for ns entries as well
 	for {
 		var found_node *cache_node = nil
 		for _, node := range cur_node.next {
@@ -212,10 +255,16 @@ func get_node(domain string) (node *cache_node, final bool) {
 		}
 		// if we couldnt find the node, we go home
 		if found_node == nil {
+			if len(cur_node.rr.nss) == 0 {
+				return last_ns_node, false
+			}
 			return cur_node, false
 		}
 		// otherwise we need set the found or created node as cur_node for next it
 		cur_node = found_node
+		if len(found_node.rr.nss) != 0 {
+			last_ns_node = found_node
+		}
 		// and pop one from the domain split
 		if len(domain_split) != 0 {
 			next_node_name = pop(&domain_split)
@@ -246,15 +295,6 @@ func cache_update_ns(related_domain string, nameserver string) {
 	tree_mu.Unlock()
 }
 
-func cache_flush_ns(related_domain string) {
-	//log.Println("flushing ns for", related_domain)
-	related_domain = strings.ToLower(related_domain)
-	tree_mu.Lock()
-	to_update_node := create_node(related_domain)
-	to_update_node.rr.nss = make([]string, 0)
-	tree_mu.Unlock()
-}
-
 func cache_update_a(domain string, ip net.IP) {
 	domain = strings.ToLower(domain)
 	//log.Println("updating cache for domain", domain, "on A to", ip)
@@ -282,20 +322,16 @@ func cache_update_cname(domain string, cname string) {
 	tree_mu.Unlock()
 }
 
-func cache_lookup(domain string) (ips []net.IP, nss []string, cname string) {
-	//t_start := time.Now()
+func cache_lookup(domain string) (ips []net.IP, nss []string, cname string, full_hit bool) {
 	domain = strings.ToLower(domain)
 	last_node, final := get_node(domain)
 	if final {
-		//log.Println("full cache hit for", domain)
 		if last_node.rr.cname != "" {
-			return nil, nil, last_node.rr.cname
+			return nil, nil, last_node.rr.cname, true
 		}
 		ips = last_node.rr.ips
 	}
-	//t_end := time.Now()
-	//log.Println("cache lookup took", t_end.UnixMicro()-t_start.UnixMicro(), "us")
-	return ips, last_node.rr.nss, ""
+	return ips, last_node.rr.nss, "", final
 }
 
 func shuffle[T ~string | interface{}](a []T) {
@@ -313,117 +349,144 @@ func on_blocklist(server net.IP) bool {
 	return false
 }
 
-func resolve(domain string, server net.IP, cache_only bool) (answers []net.IP, nameserver net.IP) {
-	if cfg.Enable_cache_lookup || cache_only {
-		// before we do anything we check the cache
-		cache_ips, cache_nss, cache_cname := cache_lookup(domain)
-		// should the domain be cnamed we just go from there
-		if cache_cname != "" {
-			//log.Println("cached cname found", domain, "points to", cache_cname)
-			return resolve(cache_cname, ROOT_SERVER, cache_only)
+func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) {
+	domain = strings.ToLower(domain)
+	道 = append(道, domain)
+	if len(道) > 50 {
+		log.Println("maximum depth exceeded for", domain)
+		return nil, nil
+	}
+
+	server := ROOT_SERVER
+
+	// === cache lookup ===
+	// before we do anything we check the cache
+	cache_ips, cache_nss, cache_cname, definitive := cache_lookup(domain)
+	// its storytime again; cases like these exist:
+	// dig @193.0.9.84 NS1.NULL1.kg A
+	// ;; AUTH
+	//   NULL1.KG.		86400	IN	NS	NS2.NULL1.KG.
+	//   NULL1.KG.		86400	IN	NS	NS1.NULL1.KG.
+	// ;; ADDITIONAL
+	//   n/a
+	// 193.0.9.84 (kg.cctld.authdns.ripe.net.) is the toplvl ns responsible for kg.
+	// what does this tell us? ダメだーー！
+	if slices.Contains(cache_nss, domain) {
+		return nil, nil
+	}
+	// should the domain be cnamed we just go from there
+	if cache_cname != "" {
+		log.Println("cached cname found", domain, "points to", cache_cname)
+		return resolve(cache_cname, 道)
+	}
+	// otherwise we question the cache if we know one of the ips of the provided nameservers
+	// theoretically we could call resolve again here with one randomly chosen nameserver,
+	// but then we wouldnt know for which one we would hold the information in cache and just take a random
+	// guess at it; i thought it to be best to use the one we have instead of potentially querying for one we dont
+	var cache_ns_ips []net.IP
+	// TODO shuffle cache_nss??
+	for _, cache_ns := range cache_nss {
+		// TODO i wonder if this should better be a resolve(cache_only=true),
+		// because what if the nameserver is cnamed?
+		tmp_cache_ns_ips, _, _, _ := cache_lookup(cache_ns)
+		if len(tmp_cache_ns_ips) != 0 {
+			// as soon as we hit, we break and use that one for any further requests (or returns)
+			cache_ns_ips = tmp_cache_ns_ips
+			break
 		}
-		// otherwise we question the cache if we know one of the ips of the provided nameservers
-		// theoretically we could call resolve again here with one randomly chosen nameserver,
-		// but then we wouldnt know for which one we would hold the information in cache and just take a random
-		// guess at it; i thought it to be best to use the one we have instead of potentially querying for one we dont
-		var cache_ns_ips []net.IP
-		for _, cache_ns := range cache_nss {
-			// TODO i wonder if this should better be a resolve(cache_only=true),
-			// because what if the nameserver is cnamed?
-			tmp_cache_ns_ips, _, _ := cache_lookup(cache_ns)
-			if len(tmp_cache_ns_ips) != 0 {
-				// as soon as we hit, we break and use that one for any further requests (or returns)
-				cache_ns_ips = tmp_cache_ns_ips
-				break
-			}
+	}
+	// if we have answer ips we return those, and potentially the ns ip
+	if len(cache_ips) != 0 {
+		if len(cache_ns_ips) != 0 {
+			return cache_ips, cache_ns_ips[rand.Intn(len(cache_ns_ips))]
+		} else {
+			return cache_ips, nil
 		}
-		// if we have answer ips we return those, and potentially the ns ip
-		if len(cache_ips) != 0 {
-			if len(cache_ns_ips) != 0 {
-				return cache_ips, cache_ns_ips[rand.Intn(len(cache_ns_ips))]
-			} else {
-				return cache_ips, nil
-			}
-		} else if cache_only {
-			// return empty-handed (◡︵◡)
-			return nil, nil
-		} else if len(cache_nss) != 0 {
-			// in case we dont, we need to query the domain and therefore we need the resolved ns
-			ns := cache_nss[rand.Intn(len(cache_nss))]
-			ns_ips, _ := resolve(ns, ROOT_SERVER, cache_only)
-			if len(ns_ips) != 0 {
-				// we now know the ns ip but not the domain ip
-				server = ns_ips[rand.Intn(len(ns_ips))]
-			} else {
-				// at this point for whatever reason the cached nameserver is no longer existent
-				// we can continue to query normally without caching
-				// but technically we would have to remove the failing cache entry as well TODO
-				// and we could also try the others we might have cached but well ...
-				log.Println("no ip for cached ns found", ns)
-			}
+	} else if len(cache_ns_ips) != 0 {
+		server = cache_ns_ips[rand.Intn(len(cache_ns_ips))]
+	} else if len(cache_nss) != 0 {
+		// in case we dont, we need to query the domain and therefore we need the resolved ns
+		ns := cache_nss[rand.Intn(len(cache_nss))]
+		ns_ips, _ := resolve(ns, 道)
+		if len(ns_ips) != 0 {
+			// we now know the ns ip but not the domain ip
+			server = ns_ips[rand.Intn(len(ns_ips))]
+		} else {
+			// at this point for whatever reason the cached nameserver is no longer existent
+			// we can continue to query normally without caching
+			// but technically we would have to remove the failing cache entry as well TODO
+			// and we could also try the others we might have cached but well ...
+			log.Println("no ip for cached ns found", ns)
 		}
 	}
 	if on_blocklist(server) {
 		return nil, nil
 	}
 
+	// === make & send the actual dns query ===
 	client := dns.Client{}
 	client.Timeout = 5 * time.Second
 	msg := dns.Msg{}
 	msg.SetQuestion(domain+".", dns.TypeA)
-	//log.Println("questioning", server, "for", msg.Question[0].Name)
+	log.Println("questioning", server, "for", msg.Question[0].Name)
 	rec, _, err := client.Exchange(&msg, server.String()+":53")
 	if err != nil {
 		log.Println(err)
 	}
+
+	// === handle the response ===
 	if rec == nil {
 		log.Println("answer is nil")
 		return nil, nil
 	}
 	if len(rec.Answer) != 0 {
 		var answers []net.IP
-		var cname string
+		var cname string = ""
 		for _, ans := range rec.Answer {
 			switch ans := ans.(type) {
 			case *dns.A:
 				answers = append(answers, ans.A)
-				cache_update_a(domain, ans.A)
+				if 道[0] != domain { // dont need to cache the original domain, as it is only looked up once
+					cache_update_a(domain, ans.A)
+				}
 			case *dns.CNAME:
-				//log.Println("found CNAME", ans.Target, "for", domain)
+				log.Println("found CNAME", ans.Target, "for", domain)
 				cname = ans.Target[:len(ans.Target)-1]
-				cache_update_cname(domain, cname)
+				if 道[0] != domain {
+					cache_update_cname(domain, cname)
+				}
 			}
 		}
 		// no ip answers -> check the cname
-		if len(answers) == 0 {
-			return resolve(cname, ROOT_SERVER, false)
+		if len(answers) == 0 && cname != "" {
+			return resolve(cname, 道)
 		}
-		//log.Println("resolve found answers", answers)
+		log.Println("resolve found answers", answers, "for domain", domain)
 		return answers, server
+	} else if definitive {
+		// return empty-handed (◡︵◡)
+		return nil, nil
 	}
-	//log.Println("no direct answers found")
+	log.Println("no direct answers found")
 
 	if len(rec.Ns) == 0 {
-		log.Println("No Nameservers found")
+		log.Println("no nameservers found")
 		return nil, nil
 	}
 
-	var related_domain string // assuming all the responses are for the same domain, we assume this anyways with the next new_ns_names
 	var new_ns_names []string
+	var related_domain string // assuming all the responses are for the same domain
 	for _, ans := range rec.Ns {
 		switch ans := ans.(type) {
 		case *dns.NS:
+			related_domain = ans.Hdr.Name[:len(ans.Hdr.Name)-1] //remove trailing dot, as it's appended again by miekg/dns
+			ns_name := ans.Ns[:len(ans.Ns)-1]
+			new_ns_names = append(new_ns_names, ns_name)
 			// update cache tree
-			related_domain = ans.Hdr.Name[:len(ans.Hdr.Name)-1]
-			new_ns_names = append(new_ns_names, ans.Ns[:len(ans.Ns)-1]) //remove trailing dot, because its appended again by miekg/dns
+			cache_update_ns(related_domain, ns_name)
 		}
 	}
-	//TODO/FIXME?? is this flush even needed?
-	cache_flush_ns(related_domain)
-	for _, ns_name := range new_ns_names {
-		cache_update_ns(related_domain, ns_name)
-	}
-	//log.Println("found next pos nameserver", new_ns_names)
+	log.Println("found next pos nameserver", new_ns_names, "related domain", related_domain)
 
 	// if there is data in the additional section we take those
 	// (as the nameservers are already resolved)
@@ -434,44 +497,18 @@ func resolve(domain string, server net.IP, cache_only bool) (answers []net.IP, n
 		for _, ans := range rec.Extra {
 			switch ans := ans.(type) {
 			case *dns.A:
-				cache_update_a(ans.Hdr.Name[:len(ans.Hdr.Name)-1], ans.A)
+				related_domain := ans.Hdr.Name[:len(ans.Hdr.Name)-1]
+				cache_update_a(related_domain, ans.A)
 				new_ns_ips = append(new_ns_ips, ans.A)
 			}
 		}
-		//log.Println("found next Nameservers", new_ns_ips)
-		if len(new_ns_ips) > 0 {
-			shuffle(new_ns_ips)
-			// TODO check: is this rly rng?
-			var answers []net.IP
-			var used_server net.IP
-			for len(answers) == 0 && len(new_ns_ips) != 0 {
-				// now we make it recursive
-				answers, used_server = resolve(domain, pop(&new_ns_ips), false) // FIXME i think this is redundant due to the caching kinda
-			}
-			return answers, used_server
-		}
-		//if there are no ips already in the additional section continue with the NS records below
+		log.Println("found next nameserver ips", new_ns_ips)
 	}
 
-	shuffle(new_ns_names)
-	answers = make([]net.IP, 0)
-	var used_server net.IP
-	for len(answers) == 0 && len(new_ns_names) != 0 {
-		// now we need to resolve the nameserver first
-		needs_resolving := pop(&new_ns_names)
-		ns_answers, _ := resolve(needs_resolving, ROOT_SERVER, false)
-		//log.Println("NS ANSWERS:", ns_answers)
-		shuffle(ns_answers) // choose nameserver randomly
-		//FIXME shuffle
-		if len(ns_answers) != 0 {
-			// now we make it recursive
-			answers, used_server = resolve(domain, ns_answers[0], false)
-		}
+	if len(new_ns_names) != 0 {
+		return resolve(domain, 道)
 	}
-	if len(answers) == 0 {
-		return nil, nil
-	}
-	return answers, used_server
+	return nil, nil
 }
 
 func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP, ecs_subnet *net.IPNet, ecs_scope net.IPMask) {
@@ -618,15 +655,16 @@ func (worker *ns_worker) request() {
 		select {
 		case domain_ns := <-domain_chan:
 			domain := domain_ns.domain
-			//t_start := time.Now()
-			answers, used_server := resolve(domain, ROOT_SERVER, false)
-			//t_end := time.Now()
-			//diff_t := t_end.UnixMilli() - t_start.UnixMilli()
-			//log.Println("domain:", domain, "answers:", answers, "auth nameserver:", used_server, "took:", diff_t, "ms")
+			t_start := time.Now()
+			answers, used_server := resolve(domain, []string{})
+			t_end := time.Now()
+			diff_t := t_end.UnixMilli() - t_start.UnixMilli()
+			log.Println("domain:", domain, "answers:", answers, "auth nameserver:", used_server, "took:", diff_t, "ms")
 			if len(answers) == 0 {
 				continue
 			}
 			domain_ns.nsip = used_server
+			write_ns_chan <- domain_ns
 		case <-worker.stop_chan:
 			return
 		}
@@ -727,9 +765,14 @@ func query_ecs() {
 
 func main() {
 	log.Println(("starting program"))
+	go writeout_ns()
 	load_config()
 	read_toplist()
 	query_ns()
+	//debug
+	log.Println("<=====PREORDER CACHE TREE=====")
+	cache_root.preorder(0)
+	log.Println("========>")
 	// flush the dns cache tree as we dont need it any longer
 	// all the relevant nameservers are stored as domain_ns_pair
 	cache_root.next = make([]*cache_node, 0)
@@ -737,9 +780,5 @@ func main() {
 	time.Sleep(5 * time.Second)
 	close(stop_write_chan)
 	time.Sleep(5 * time.Second) // wait to write all data completely to file
-	//debug
-	// log.Println("<=====PREORDER CACHE TREE=====")
-	// cache_root.preorder(0)
-	// log.Println("========>")
 	log.Println("program end")
 }
