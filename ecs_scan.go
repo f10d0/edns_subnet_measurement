@@ -478,11 +478,9 @@ func resolve(domain string, path []string) (answers []net.IP, nameserver net.IP)
 			// we now know the ns ip but not the domain ip
 			server = ns_ips[rand.Intn(len(ns_ips))]
 		} else {
-			// at this point for whatever reason the cached nameserver is no longer existent
-			// we can continue to query normally without caching
-			// but technically we would have to remove the failing cache entry as well TODO
-			// and we could also try the others we might have cached but well ...
+			// at this point for whatever reason the cached nameserver is not existent
 			println(4, "no ip for cached ns found", ns)
+			return nil, nil
 		}
 	}
 	if on_blocklist(server) {
@@ -550,6 +548,12 @@ func resolve(domain string, path []string) (answers []net.IP, nameserver net.IP)
 			new_ns_names = append(new_ns_names, ns_name)
 			// update cache tree
 			cache_update_ns(related_domain, ns_name)
+		}
+	}
+	for _, alr_domain := range path {
+		if slices.Contains(new_ns_names, alr_domain) {
+			println(3, "path already contains nameserver")
+			return nil, nil
 		}
 	}
 	println(4, "found next pos nameserver", new_ns_names, "related domain", related_domain)
