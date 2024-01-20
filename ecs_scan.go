@@ -47,7 +47,7 @@ var domains_mu sync.Mutex
 var subnets = make([]*net.IPNet, 0)
 
 func println(lvl int, v ...any) {
-	if lvl >= cfg.Verbosity {
+	if lvl <= cfg.Verbosity {
 		log.Println(v...)
 	}
 }
@@ -111,7 +111,7 @@ func writeout() {
 	defer csvfile.Close()
 
 	zip_writer := gzip.NewWriter(csvfile)
-	defer zip_writer.Flush()
+	defer zip_writer.Close()
 
 	writer := csv.NewWriter(zip_writer)
 	writer.Comma = ';'
@@ -123,7 +123,6 @@ func writeout() {
 			out_str := item.to_csv_strarr()
 			println(4, "writing scan item to file:", out_str)
 			writer.Write(out_str)
-			//writer.Flush()
 		case <-stop_write_chan:
 			return
 		}
@@ -138,7 +137,7 @@ func writeout_ns() {
 	defer csvfile.Close()
 
 	zip_writer := gzip.NewWriter(csvfile)
-	defer zip_writer.Flush()
+	defer zip_writer.Close()
 
 	writer := csv.NewWriter(zip_writer)
 	writer.Comma = ';'
@@ -152,7 +151,6 @@ func writeout_ns() {
 			outarr[0] = pair.domain
 			outarr[1] = pair.nsip.String()
 			writer.Write(outarr)
-			writer.Flush()
 		case <-stop_write_chan:
 			return
 		}
