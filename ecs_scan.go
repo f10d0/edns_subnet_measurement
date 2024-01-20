@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strconv"
 	"strings"
@@ -772,7 +774,18 @@ func query_ecs() {
 }
 
 func main() {
-	println(1, "starting program")
+	cpuFile, err := os.Create("cpu.prof")
+	if err != nil {
+		panic(err)
+	}
+	defer cpuFile.Close()
+
+	runtime.SetCPUProfileRate(400)
+	if err := pprof.StartCPUProfile(cpuFile); err != nil {
+		panic(err)
+	}
+	defer pprof.StopCPUProfile()
+
 	go writeout_ns()
 	load_config()
 	read_toplist()
