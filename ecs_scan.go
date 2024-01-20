@@ -21,7 +21,7 @@ import (
 // verbosity
 // 0: off | 1: info prints | 2: errors | 3: warns | 4: spam the console | 5: equivalent of setting discord to light mode
 type cfg_db struct {
-	Verbosity            int    `yaml:"debug"`
+	Verbosity            int    `yaml:"verbosity"`
 	Nameserver_writeout  bool   `yaml:"nameserver_writeout"`
 	Toplist_fname        string `yaml:"toplist_fname"`
 	Subnets_fname        string `yaml:"subnets_fname"`
