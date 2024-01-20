@@ -18,8 +18,11 @@ import (
 )
 
 // config
+// verbosity
+// 0: off | 1: info prints | 2: errors | 3: warns | 4: spam the console | 5: equivalent of setting discord to light mode
 type cfg_db struct {
-	Debug                bool   `yaml:"debug"`
+	Verbosity            int    `yaml:"debug"`
+	Nameserver_writeout  bool   `yaml:"nameserver_writeout"`
 	Toplist_fname        string `yaml:"toplist_fname"`
 	Subnets_fname        string `yaml:"subnets_fname"`
 	Number_of_domains    int    `yaml:"no_of_domains"`
@@ -43,12 +46,18 @@ var domains []*domain_ns_pair = []*domain_ns_pair{}
 var domains_mu sync.Mutex
 var subnets = make([]*net.IPNet, 0)
 
+func println(lvl int, v ...any) {
+	if lvl >= cfg.Verbosity {
+		log.Println(v...)
+	}
+}
+
 func load_config() {
-	log.Println("loading config")
 	err := cleanenv.ReadConfig("config.yml", &cfg)
 	if err != nil {
 		panic(err)
 	}
+	println(1, "config loaded")
 }
 
 type domain_ns_pair struct {
@@ -112,7 +121,7 @@ func writeout() {
 		select {
 		case item := <-write_chan:
 			out_str := item.to_csv_strarr()
-			//log.Println("writing to file:", out_str)
+			println(4, "writing scan item to file:", out_str)
 			writer.Write(out_str)
 			//writer.Flush()
 		case <-stop_write_chan:
@@ -134,11 +143,11 @@ func writeout_ns() {
 	writer := csv.NewWriter(zip_writer)
 	writer.Comma = ';'
 	defer writer.Flush()
-	log.Println("writer for ns entries started")
+	println(1, "writer for ns entries started")
 	for {
 		select {
 		case pair := <-write_ns_chan:
-			log.Println("write_ns_chan", pair)
+			println(4, "writing domain-ns pair", pair)
 			var outarr []string = make([]string, 2)
 			outarr[0] = pair.domain
 			outarr[1] = pair.nsip.String()
@@ -179,7 +188,7 @@ var cache_root cache_node = cache_node{
 var tree_mu sync.Mutex
 
 func (parent *cache_node) preorder(level int) {
-	log.Println("LEVEL:", level, "| name:", parent.node_name, "| nss:", parent.rr.nss, "| ips", parent.rr.ips)
+	println(5, "LEVEL:", level, "| name:", parent.node_name, "| nss:", parent.rr.nss, "| ips", parent.rr.ips)
 	for _, child := range parent.next {
 		child.preorder(level + 1)
 	}
@@ -279,7 +288,7 @@ func cache_update_ns(related_domain string, nameserver string) {
 	related_domain = strings.ToLower(related_domain)
 	nameserver = strings.ToLower(nameserver)
 	tree_mu.Lock()
-	//log.Println("updating cache for domain", related_domain, "on NS to", nameserver)
+	println(5, "updating cache for domain", related_domain, "on NS to", nameserver)
 	to_update_node := create_node(related_domain)
 	contains := false
 	// TODO emulate set by using smth like this instead: map[int]bool{1: true, 2: true}
@@ -297,7 +306,7 @@ func cache_update_ns(related_domain string, nameserver string) {
 
 func cache_update_a(domain string, ip net.IP) {
 	domain = strings.ToLower(domain)
-	//log.Println("updating cache for domain", domain, "on A to", ip)
+	println(5, "updating cache for domain", domain, "on A to", ip)
 	tree_mu.Lock()
 	to_update_node := create_node(domain)
 	contains := false
@@ -353,7 +362,7 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 	domain = strings.ToLower(domain)
 	道 = append(道, domain)
 	if len(道) > 50 {
-		log.Println("maximum depth exceeded for", domain)
+		println(3, "maximum depth exceeded for", domain)
 		return nil, nil
 	}
 
@@ -376,7 +385,7 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 	}
 	// should the domain be cnamed we just go from there
 	if cache_cname != "" {
-		log.Println("cached cname found", domain, "points to", cache_cname)
+		println(4, "cached cname found", domain, "points to", cache_cname)
 		return resolve(cache_cname, 道)
 	}
 	// otherwise we question the cache if we know one of the ips of the provided nameservers
@@ -416,7 +425,7 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 			// we can continue to query normally without caching
 			// but technically we would have to remove the failing cache entry as well TODO
 			// and we could also try the others we might have cached but well ...
-			log.Println("no ip for cached ns found", ns)
+			println(4, "no ip for cached ns found", ns)
 		}
 	}
 	if on_blocklist(server) {
@@ -428,15 +437,15 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 	client.Timeout = 5 * time.Second
 	msg := dns.Msg{}
 	msg.SetQuestion(domain+".", dns.TypeA)
-	log.Println("questioning", server, "for", msg.Question[0].Name)
+	println(4, "questioning", server, "for", msg.Question[0].Name)
 	rec, _, err := client.Exchange(&msg, server.String()+":53")
 	if err != nil {
-		log.Println(err)
+		println(2, err)
 	}
 
 	// === handle the response ===
 	if rec == nil {
-		log.Println("answer is nil")
+		println(3, "answer is nil")
 		return nil, nil
 	}
 	if len(rec.Answer) != 0 {
@@ -450,7 +459,7 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 					cache_update_a(domain, ans.A)
 				}
 			case *dns.CNAME:
-				log.Println("found CNAME", ans.Target, "for", domain)
+				println(4, "found CNAME", ans.Target, "for", domain)
 				cname = ans.Target[:len(ans.Target)-1]
 				if 道[0] != domain {
 					cache_update_cname(domain, cname)
@@ -461,16 +470,16 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 		if len(answers) == 0 && cname != "" {
 			return resolve(cname, 道)
 		}
-		log.Println("resolve found answers", answers, "for domain", domain)
+		println(4, "resolve found answers", answers, "for domain", domain)
 		return answers, server
 	} else if definitive {
 		// return empty-handed (◡︵◡)
 		return nil, nil
 	}
-	log.Println("no direct answers found")
+	println(4, "no direct answers found")
 
 	if len(rec.Ns) == 0 {
-		log.Println("no nameservers found")
+		println(3, "no nameservers found for", domain)
 		return nil, nil
 	}
 
@@ -486,7 +495,7 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 			cache_update_ns(related_domain, ns_name)
 		}
 	}
-	log.Println("found next pos nameserver", new_ns_names, "related domain", related_domain)
+	println(4, "found next pos nameserver", new_ns_names, "related domain", related_domain)
 
 	// if there is data in the additional section we take those
 	// (as the nameservers are already resolved)
@@ -502,7 +511,7 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 				new_ns_ips = append(new_ns_ips, ans.A)
 			}
 		}
-		log.Println("found next nameserver ips", new_ns_ips)
+		println(4, "found next nameserver ips", new_ns_ips)
 	}
 
 	if len(new_ns_names) != 0 {
@@ -512,8 +521,7 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 }
 
 func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP, ecs_subnet *net.IPNet, ecs_scope net.IPMask) {
-
-	// log.Println("ecs questioning:", nsip, "for:", domain, "with subnet:", subnet)
+	println(4, "ecs questioning:", nsip, "for:", domain, "with subnet:", subnet)
 
 	client := dns.Client{}
 	client.Timeout = 5 * time.Second
@@ -545,7 +553,7 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 	// Making the Query
 	rec, _, err := client.Exchange(&msg, nsip.String()+":53")
 	if err != nil {
-		log.Println(err)
+		println(2, err)
 		return nil, nil, nil
 	}
 	answers = make([]net.IP, 0)
@@ -557,7 +565,7 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 				answers = append(answers, net.IP(ans.A))
 			}
 		}
-		//log.Println("ecs found answers", answers)
+		println(5, "ecs found answers", answers)
 	}
 	for _, rr := range rec.Extra {
 		if opt, ok := rr.(*dns.OPT); ok {
@@ -578,7 +586,7 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 }
 
 func read_subnets() {
-	log.Println("reading subnets")
+	println(1, "reading subnets")
 	subnetfile, err := os.Open(cfg.Subnets_fname)
 	if err != nil {
 		log.Fatal("Unable to read input file " + cfg.Subnets_fname)
@@ -608,11 +616,11 @@ func read_subnets() {
 		}
 		subnets = append(subnets, subnet)
 	}
-	log.Println("read subnets:", subnets)
+	println(4, "read subnets:", subnets)
 }
 
 func read_toplist() {
-	log.Println("reading toplist")
+	println(1, "reading toplist")
 	topfile, err := os.Open(cfg.Toplist_fname)
 	if err != nil {
 		log.Fatal("Unable to read input file " + cfg.Toplist_fname)
@@ -641,7 +649,7 @@ func read_toplist() {
 		})
 		domains_mu.Unlock()
 	}
-	log.Println("read", len(domains), "toplist entries")
+	println(1, "read", len(domains), "toplist entries")
 }
 
 type ns_worker struct {
@@ -659,12 +667,14 @@ func (worker *ns_worker) request() {
 			answers, used_server := resolve(domain, []string{})
 			t_end := time.Now()
 			diff_t := t_end.UnixMilli() - t_start.UnixMilli()
-			log.Println("domain:", domain, "answers:", answers, "auth nameserver:", used_server, "took:", diff_t, "ms")
+			println(4, "domain:", domain, "answers:", answers, "auth nameserver:", used_server, "took:", diff_t, "ms")
 			if len(answers) == 0 {
 				continue
 			}
 			domain_ns.nsip = used_server
-			write_ns_chan <- domain_ns
+			if cfg.Nameserver_writeout {
+				write_ns_chan <- domain_ns
+			}
 		case <-worker.stop_chan:
 			return
 		}
@@ -672,8 +682,8 @@ func (worker *ns_worker) request() {
 }
 
 func query_ns() {
-	log.Println("getting all the nameservers")
-	log.Println("starting", cfg.Simul_ns_reqs, "nameserver request routines")
+	println(1, "getting all the nameservers")
+	println(1, "starting", cfg.Simul_ns_reqs, "nameserver request routines")
 	total_start_t := time.Now()
 	var ns_workers []*ns_worker = make([]*ns_worker, 0)
 	for i := 0; i < cfg.Simul_ns_reqs; i++ {
@@ -687,16 +697,16 @@ func query_ns() {
 		for _, domain_ns := range domains {
 			domain_chan <- domain_ns
 		}
-		log.Println("waiting to end ns request workers")
+		println(3, "waiting to end ns request workers")
 		time.Sleep(time.Duration(cfg.Routine_stop_timeout) * time.Second)
-		log.Println("ending workers")
+		println(3, "ending workers")
 		for _, worker := range ns_workers {
 			close(worker.stop_chan)
 		}
 	}()
 	wg_scan.Wait()
 	total_end_t := time.Now()
-	log.Println("ns-req, total took:", total_end_t.Unix()-total_start_t.Unix(), "s")
+	println(2, "ns-req, total took:", total_end_t.Unix()-total_start_t.Unix(), "s")
 }
 
 type scan_worker struct {
@@ -730,13 +740,13 @@ func (scanner *scan_worker) scan(subnet *net.IPNet) {
 }
 
 func query_ecs() {
-	log.Println("starting main scan")
+	println(1, "starting main scan")
 	go writeout()
 	// read list of subnets
 	read_subnets()
 	// for all subnets
 	for i, subnet := range subnets {
-		log.Println("scanning subnet", i, subnet.String())
+		println(1, "scanning subnet", i, subnet.String())
 		// start all the scanners
 		var scanners []*scan_worker = make([]*scan_worker, 0)
 		for i := 0; i < cfg.Simul_ecs_reqs; i++ {
@@ -752,9 +762,9 @@ func query_ecs() {
 				domain_chan <- domain
 			}
 			// wait a gracious x seconds until all dns requests are complete
-			log.Println("waiting to end this round")
+			println(1, "waiting to end this round")
 			time.Sleep(time.Duration(cfg.Routine_stop_timeout) * time.Second)
-			log.Println("stopping scanner now")
+			println(1, "stopping scanner now")
 			for _, scanner := range scanners {
 				close(scanner.stop_scan)
 			}
@@ -764,15 +774,17 @@ func query_ecs() {
 }
 
 func main() {
-	log.Println(("starting program"))
+	println(1, "starting program")
 	go writeout_ns()
 	load_config()
 	read_toplist()
 	query_ns()
 	//debug
-	log.Println("<=====PREORDER CACHE TREE=====")
-	cache_root.preorder(0)
-	log.Println("========>")
+	println(5, "<=====PREORDER CACHE TREE=====")
+	if cfg.Verbosity >= 5 {
+		cache_root.preorder(0)
+	}
+	println(5, "========>")
 	// flush the dns cache tree as we dont need it any longer
 	// all the relevant nameservers are stored as domain_ns_pair
 	cache_root.next = make([]*cache_node, 0)
@@ -780,5 +792,5 @@ func main() {
 	time.Sleep(5 * time.Second)
 	close(stop_write_chan)
 	time.Sleep(5 * time.Second) // wait to write all data completely to file
-	log.Println("program end")
+	println(1, "program end")
 }

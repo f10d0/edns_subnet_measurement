@@ -1,4 +1,4 @@
-debug: true
+verbosity: 0
 enable_cache_lookup: true
 toplist_fname: top-1m.csv
 subnets_fname: subnets.txt
@@ -6,3 +6,4 @@ no_of_domains: 10000 # set to -1 to disable
 simul_ecs_reqs: 100
 simul_ns_reqs: 50
 routine_stop_timeout: 10
+nameserver_writeout: false
