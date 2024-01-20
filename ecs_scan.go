@@ -835,22 +835,22 @@ func query_ecs() {
 }
 
 func main() {
-	cpuFile, err := os.Create("cpu.prof")
+	cpuFile, err := os.Create("cpu_ns.prof")
 	if err != nil {
 		panic(err)
 	}
-	defer cpuFile.Close()
-
-	runtime.SetCPUProfileRate(400)
+	runtime.SetCPUProfileRate(200)
 	if err := pprof.StartCPUProfile(cpuFile); err != nil {
 		panic(err)
 	}
-	defer pprof.StopCPUProfile()
 
 	go writeout_ns()
 	load_config()
 	read_toplist()
 	query_ns()
+
+	pprof.StopCPUProfile()
+	cpuFile.Close()
 	//debug
 	println(5, "<=====PREORDER CACHE TREE=====")
 	if cfg.Verbosity >= 5 {
@@ -860,7 +860,21 @@ func main() {
 	// flush the dns cache tree as we dont need it any longer
 	// all the relevant nameservers are stored as domain_ns_pair
 	cache_root.next = make([]*cache_node, 0)
+
+	cpuFile, err = os.Create("cpu_ecs.prof")
+	if err != nil {
+		panic(err)
+	}
+	runtime.SetCPUProfileRate(200)
+	if err := pprof.StartCPUProfile(cpuFile); err != nil {
+		panic(err)
+	}
+
 	query_ecs()
+
+	pprof.StopCPUProfile()
+	cpuFile.Close()
+
 	time.Sleep(5 * time.Second)
 	close(stop_write_chan)
 	time.Sleep(5 * time.Second) // wait to write all data completely to file
