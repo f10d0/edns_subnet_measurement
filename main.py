@@ -10,23 +10,16 @@ database_cache = {}
 distance_cache = {}
 
 reader = geoip2.database.Reader('GeoLite2-City_20240109/GeoLite2-City.mmdb')
-relative_file_path = "scan.csv.gz"
+relative_file_path = "csvs/scan.csv.gz"
 data_path = os.path.join(os.getcwd(), relative_file_path)
 plot_path = os.path.join(os.getcwd(), "plots")
 # Directory for the plots
 if not os.path.exists(plot_path):
     os.mkdir(plot_path)
-# Read the data
-df = pd.read_csv(data_path,
-                 header=None,
-                 sep=";",
-                 names=["timestamp", "domain", "ns-ip", "subnet", "returned-subnet", "scope", "returned-ips"],
-                 usecols=["domain", "ns-ip", "subnet", "scope", "returned-ips"])
-df[["subnet", "subnet-scope"]] = df["subnet"].str.split("/", expand=True)
 
 
 # Plot for the Percentage of Responses that contain an ECS Field
-def plot_ecs_support_percentage():
+def plot_ecs_support_percentage(df):
     no_returned_ecs = df["returned-subnet"].isna().sum()
     returned_ecs = df["returned-subnet"].dropna().count()
     ecs_fields = pd.DataFrame({"ECS field in response": [returned_ecs, no_returned_ecs]}, index=["yes", "no"])
@@ -35,7 +28,7 @@ def plot_ecs_support_percentage():
 
 
 # Plot for the Distribution of Prefix lengths
-def plot_returned_scopes():
+def plot_returned_scopes(df):
     return_scopes = df.groupby("scope").count()
     return_scopes = return_scopes[["timestamp"]]
     return_scopes = return_scopes.rename(columns={"timestamp": "count"})
@@ -45,7 +38,7 @@ def plot_returned_scopes():
 
 
 # Plot for Prefix lengths in comparison to the input length
-def plot_returned_scope_comparison():
+def plot_returned_scope_comparison(df):
     scopes = df[["subnet-scope", "scope"]].dropna()
     scopes["subnet-scope"] = scopes["subnet-scope"].astype(int)
     scopes["scope"] = scopes["scope"].astype(int)
@@ -110,26 +103,50 @@ def average_distance(subnet_location, ip_locations):
     return average_dist
 
 
+# enriches csv with geolocation data. Process takes times mainly because calculating distance is slow
+def create_enriched_data(csv):
+
+    chunk_size = 10 ** 6 * 5
+    with pd.read_csv(csv,
+                     chunksize=chunk_size,
+                     header=None,
+                     sep=";",
+                     names=["timestamp", "domain", "ns-ip", "subnet", "returned-subnet", "scope", "returned-ips"],
+                     usecols=["timestamp", "domain", "ns-ip", "subnet", "returned-subnet", "scope", "returned-ips"],
+                     dtype={"timestamp": str,
+                            "domain": str,
+                            "ns-ip": str,
+                            "subnet": str,
+                            "returned-subnet": str,
+                            "scope": float,
+                            "returned-ips": str}) as csvreader:
+
+        for chunk in csvreader:
+
+            chunk[["subnet", "subnet-scope"]] = chunk["subnet"].str.split("/", expand=True)
+
+            chunk["subnet-location"] = chunk["subnet"].apply(ip_to_location)
+            chunk["ip-locations"] = chunk["returned-ips"].apply(ips_to_location)
+
+            chunk["average-distance"] = chunk.apply(
+                lambda row: average_distance(row["subnet-location"], row["ip-locations"]), axis=1)
+
+            # rearrange the columns a bit
+            chunk = chunk[["timestamp", "domain", "ns-ip",
+                           "subnet", "subnet-scope", "subnet-location",
+                           "returned-subnet", "scope", "returned-ips", "ip-locations", "average-distance"]]
+
+            chunk.to_csv("csvs/enriched_scan.csv.gz", compression="gzip", index=False, mode="a", header=False, sep=";")
+            print("chunk completed")
 
 
 def main():
 
-    # plot_ecs_support_percentage()
-    # plot_returned_scopes()
-    # plot_returned_scope_comparison()
-
-    """
-    df["subnet-location"] = df["subnet"].apply(ip_to_location)
-    df["ip-locations"] = df["returned-ips"].apply(ips_to_location)
-    """
-
-    """
-    df["average-distance"] = df.apply(lambda row: average_distance(row["subnet-location"], row["ip-locations"]), axis=1)
-    df = df[df["average-distance"].notna()
-    df["average-distance"] = df["average-distance"].astype(float)
-    
-    print(df[["domain", "average-distance"]].groupby("domain").mean().sort_values(by="average-distance", ascending=False).head())
-    """
+    create_enriched_data("csvs/scan.csv.gz")
+    # pd.read_csv("csvs/archive/enriched_scan.csv")
+    # plot_ecs_support_percentage(df)
+    # plot_returned_scopes(df)
+    # plot_returned_scope_comparison(df)
 
 
 if __name__ == "__main__":
