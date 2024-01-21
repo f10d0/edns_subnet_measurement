@@ -173,7 +173,7 @@ def create_enriched_data(csv):
 
 
 # function to load a scan csv enriched with geolocation data
-def load_enriched_csv(csv_path, usecols):
+def load_enriched_csv(csv_path, usecols=None):
 
     df = pd.read_csv(csv_path,
                      header=None,
