@@ -19,7 +19,12 @@ if not os.path.exists(plot_path):
 
 
 # Plot for the Percentage of Responses that contain an ECS Field
+# requires "returned-subnet" columns
 def plot_ecs_support_percentage(df):
+
+    if "returned-subnet" not in df.columns:
+        print("Missing 'returned-subnet' column")
+        return
     no_returned_ecs = df["returned-subnet"].isna().sum()
     returned_ecs = df["returned-subnet"].dropna().count()
     ecs_fields = pd.DataFrame({"ECS field in response": [returned_ecs, no_returned_ecs]}, index=["yes", "no"])
@@ -28,7 +33,12 @@ def plot_ecs_support_percentage(df):
 
 
 # Plot for the Distribution of Prefix lengths
+# requires "scope" column and "timestamp" column for counting <- change this
 def plot_returned_scopes(df):
+
+    if "scope" and "timestamp" not in df.columns:
+        print("Missing 'timestamp' or 'scope' column")
+        return
     return_scopes = df.groupby("scope").count()
     return_scopes = return_scopes[["timestamp"]]
     return_scopes = return_scopes.rename(columns={"timestamp": "count"})
@@ -38,7 +48,15 @@ def plot_returned_scopes(df):
 
 
 # Plot for Prefix lengths in comparison to the input length
+# requires "subnet", "scope"
+# also works if "subnet" already has been split in "subnet" and "subnet-scope"
 def plot_returned_scope_comparison(df):
+
+    if "scope" and "subnet" not in df.columns:
+        print("Missing 'scope' or 'subnet' column")
+        return
+    if "subnet-scope" not in df.columns:
+        df[["subnet", "subnet-scope"]] = df["subnet"].str.split("/", expand=True)
     scopes = df[["subnet-scope", "scope"]].dropna()
     scopes["subnet-scope"] = scopes["subnet-scope"].astype(int)
     scopes["scope"] = scopes["scope"].astype(int)
@@ -51,6 +69,19 @@ def plot_returned_scope_comparison(df):
                                   index=["same prefix length", "no prefix", "less specific prefix (none 0)", "more specific prefix"])
     plot = compare_scopes.plot.pie(y=0, legend=False, autopct='%1.1f%%')
     plot.get_figure().savefig(os.path.join(plot_path, "compare_scopes.png"))
+
+
+# plots CDF for average-distances
+# requires "average-distance" column
+def plot_distance_cdf(df):
+
+    if "average-distance" not in df.columns:
+        print("Missing 'average-distance' column")
+        return
+    cdf = pd.DataFrame(df["average-distance"])
+    cdf["cdf"] = cdf.rank(method="average", pct=True)
+    ax = cdf.sort_values("average-distance").plot(x="average-distance", y="cdf", grid=True)
+    ax.get_figure().savefig(os.path.join(plot_path, "distance_cdf.png"))
 
 
 # The way the data is saved is pretty cursed ngl, but it works I guess... for now
@@ -134,19 +165,65 @@ def create_enriched_data(csv):
             # rearrange the columns a bit
             chunk = chunk[["timestamp", "domain", "ns-ip",
                            "subnet", "subnet-scope", "subnet-location",
-                           "returned-subnet", "scope", "returned-ips", "ip-locations", "average-distance"]]
+                           "returned-subnet", "scope", "returned-ips",
+                           "ip-locations", "average-distance"]]
 
             chunk.to_csv("csvs/enriched_scan.csv.gz", compression="gzip", index=False, mode="a", header=False, sep=";")
             print("chunk completed")
 
 
+# function to load a scan csv enriched with geolocation data
+def load_enriched_csv(csv_path, usecols):
+
+    df = pd.read_csv(csv_path,
+                     header=None,
+                     sep=";",
+                     names=["timestamp", "domain", "ns-ip",
+                            "subnet", "subnet-scope", "subnet-location",
+                            "returned-subnet", "scope", "returned-ips",
+                            "ip-locations", "average-distance"],
+                     usecols=usecols,
+                     dtype={"timestamp": str,
+                            "domain": str,
+                            "ns-ip": str,
+                            "subnet": str,
+                            "subnet-scope": float,
+                            "returned-subnet": str,
+                            "scope": float,
+                            "returned-ips": str,
+                            "average-distance": float})
+    return df
+
+
 def main():
 
-    create_enriched_data("csvs/scan.csv.gz")
-    # pd.read_csv("csvs/archive/enriched_scan.csv")
+    df = pd.read_csv("csvs/scan.csv.gz",
+                     header=None,
+                     sep=";",
+                     names=["timestamp", "domain", "ns-ip", "subnet", "returned-subnet", "scope", "returned-ips"],
+                     usecols=["timestamp", "scope"],
+                     dtype={"timestamp": str,
+                            "domain": str,
+                            "ns-ip": str,
+                            "subnet": str,
+                            "returned-subnet": str,
+                            "scope": float,
+                            "returned-ips": str})
+
+    plot_returned_scopes(df)
+
     # plot_ecs_support_percentage(df)
-    # plot_returned_scopes(df)
     # plot_returned_scope_comparison(df)
+
+    # create_enriched_data("csvs/scan_2024-01-20_01-00_UTC_fixed.csv.gz")
+
+    # df = load_enriched_csv("csvs/enriched_scan.csv.gz", usecols=["domain", "average-distance"])
+    # df = df.groupby(by=["domain"]).mean().sort_values(by="average-distance", ascending=True)
+    # ax = df.plot()
+    # ax.get_figure().savefig(os.path.join(plot_path, "distances.png"))
+
+    # plot_distance_cdf(df)
+
 
 
 if __name__ == "__main__":
