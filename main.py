@@ -13,10 +13,6 @@ reader = geoip2.database.Reader('GeoLite2-City_20240109/GeoLite2-City.mmdb')
 relative_file_path = "csvs/scan.csv.gz"
 data_path = os.path.join(os.getcwd(), relative_file_path)
 plot_path = os.path.join(os.getcwd(), "plots")
-# Directory for the plots
-if not os.path.exists(plot_path):
-    os.mkdir(plot_path)
-
 
 # Plot for the Percentage of Responses that contain an ECS Field
 # requires "returned-subnet" columns
@@ -71,16 +67,27 @@ def plot_returned_scope_comparison(df):
     plot.get_figure().savefig(os.path.join(plot_path, "compare_scopes.png"))
 
 
-# plots CDF for average-distances
-# requires "average-distance" column
+# plots CDF for average-distances for domains
+# only takes domains, which got distances for at least 10 different subnets in order to filter out some outliers
+# requires "average-distance" and "scope" column
 def plot_distance_cdf(df):
 
-    if "average-distance" not in df.columns:
-        print("Missing 'average-distance' column")
+    if "average-distance" and "scope" not in df.columns:
+        print("Missing 'average-distance' or 'scope' column")
         return
-    cdf = pd.DataFrame(df["average-distance"])
-    cdf["cdf"] = cdf.rank(method="average", pct=True)
-    ax = cdf.sort_values("average-distance").plot(x="average-distance", y="cdf", grid=True)
+
+    ecs_df = df[df["scope"].notna()]
+    non_ecs_df = df[df["scope"].isna()]
+    ax = None
+
+    for sub_df in [ecs_df, non_ecs_df]:
+        cdf = pd.DataFrame(sub_df["average-distance"])
+        cdf["cdf"] = cdf.rank(method="average", pct=True)
+        if not ax:
+            ax = cdf.sort_values("average-distance").plot(x="average-distance", y="cdf", grid=True, kind="line")
+        elif ax:
+            ax = cdf.sort_values("average-distance").plot(x="average-distance", y="cdf", grid=True, kind="line", ax=ax)
+
     ax.get_figure().savefig(os.path.join(plot_path, "distance_cdf.png"))
 
 
@@ -135,10 +142,14 @@ def average_distance(subnet_location, ip_locations):
 
 
 # enriches csv with geolocation data. Process takes times mainly because calculating distance is slow
-def create_enriched_data(csv):
+def create_enriched_data(csv_path):
 
+    if os.path.exists("csvs/enriched_scan.csv.gz"):
+        print("target CSV file already exists")
+        return
     chunk_size = 10 ** 6 * 5
-    with pd.read_csv(csv,
+
+    with pd.read_csv(csv_path,
                      chunksize=chunk_size,
                      header=None,
                      sep=";",
@@ -172,6 +183,25 @@ def create_enriched_data(csv):
             print("chunk completed")
 
 
+# function to load scan an "unenriched" csv
+def load_csv(csv_path, usecols=None):
+
+    df = pd.read_csv(csv_path,
+                     header=None,
+                     sep=";",
+                     names=["timestamp", "domain", "ns-ip", "subnet", "returned-subnet", "scope", "returned-ips"],
+                     usecols=usecols,
+                     dtype={"timestamp": str,
+                            "domain": str,
+                            "ns-ip": str,
+                            "subnet": str,
+                            "returned-subnet": str,
+                            "scope": float,
+                            "returned-ips": str})
+
+    return df
+
+
 # function to load a scan csv enriched with geolocation data
 def load_enriched_csv(csv_path, usecols=None):
 
@@ -197,33 +227,32 @@ def load_enriched_csv(csv_path, usecols=None):
 
 def main():
 
-    df = pd.read_csv("csvs/scan.csv.gz",
-                     header=None,
-                     sep=";",
-                     names=["timestamp", "domain", "ns-ip", "subnet", "returned-subnet", "scope", "returned-ips"],
-                     usecols=["timestamp", "scope"],
-                     dtype={"timestamp": str,
-                            "domain": str,
-                            "ns-ip": str,
-                            "subnet": str,
-                            "returned-subnet": str,
-                            "scope": float,
-                            "returned-ips": str})
+    # pd.set_option('display.max_rows', 500)
+    # pd.set_option('display.max_columns', 500)
+    # pd.set_option('display.width', 1000)
 
-    plot_returned_scopes(df)
+    # Directory for the plots
+    if not os.path.exists(plot_path):
+        os.mkdir(plot_path)
+
+    df = load_csv("csvs/scan.csv.gz")
+    df = df[df["returned-subnet"].isna()]
+    df = df[df["returned-ips"].notna()]
+    print(len(df))
+
+    '''
+    df = load_enriched_csv("csvs/enriched_scan.csv.gz", usecols=["domain", "scope", "average-distance"])
+    df = df[df["average-distance"].notna()]
+    df["freq"] = df.groupby(by="domain")["domain"].transform("count")
+    df = df.groupby(by="domain").mean()
+    df = df[df["freq"] > 10].sort_values(by="average-distance", ascending=True)
+    plot_distance_cdf(df)
+    '''
 
     # plot_ecs_support_percentage(df)
     # plot_returned_scope_comparison(df)
 
     # create_enriched_data("csvs/scan_2024-01-20_01-00_UTC_fixed.csv.gz")
-
-    # df = load_enriched_csv("csvs/enriched_scan.csv.gz", usecols=["domain", "average-distance"])
-    # df = df.groupby(by=["domain"]).mean().sort_values(by="average-distance", ascending=True)
-    # ax = df.plot()
-    # ax.get_figure().savefig(os.path.join(plot_path, "distances.png"))
-
-    # plot_distance_cdf(df)
-
 
 
 if __name__ == "__main__":
