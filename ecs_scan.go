@@ -550,12 +550,12 @@ func resolve(domain string, path []string) (answers []net.IP, nameserver net.IP)
 			cache_update_ns(related_domain, ns_name)
 		}
 	}
-	for _, alr_domain := range path {
+	/*for _, alr_domain := range path {
 		if slices.Contains(new_ns_names, alr_domain) {
-			println(3, "path already contains nameserver")
+			println(3, "path already contains nameserver", alr_domain)
 			return nil, nil
 		}
-	}
+	}*/
 	println(4, "found next pos nameserver", new_ns_names, "related domain", related_domain)
 
 	// if there is data in the additional section we take those
@@ -643,7 +643,7 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 		}
 	}
 
-	return nil, nil, nil
+	return answers, nil, nil
 }
 
 func read_subnets() {
