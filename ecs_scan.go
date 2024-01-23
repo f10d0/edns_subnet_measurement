@@ -598,6 +598,7 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 	opt := dns.OPT{}
 	opt.Hdr.Name = "."
 	opt.Hdr.Rrtype = dns.TypeOPT
+	opt.SetUDPSize(1232)
 
 	// Adding the EDNS0 Subnet Functionality
 	e := dns.EDNS0_SUBNET{}
