@@ -1,0 +1,11 @@
+venv/
+.venv/
+csvs/
+.vscode/
+*.csv.gz
+*.prof
+plots/
+db/
+__pycache__/
+config.yml
+subnets.txt
