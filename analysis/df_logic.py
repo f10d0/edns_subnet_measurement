@@ -63,11 +63,21 @@ def ip_to_location(ip: str) -> Tuple[str, str, int]:
     try:
         city_resp = geo_reader.city(ip)
     except geoip2.errors.AddressNotFoundError:
-        return (None, None), None, None
+        return None, None, None, None, None
 
     # TODO i feel like this database_cache is probably not needed
+    # or is it?
     database_cache[ip] = city_resp.location.latitude, city_resp.location.longitude, city_resp.country.iso_code, city_resp.location.accuracy_radius, city_resp.continent.code
     return database_cache[ip]
+
+def ips_to_location(ips):
+    if type(ips) is float:
+        return np.nan
+    iplist = str.split(ips, ",")
+    locations = []
+    for ip in iplist:
+        locations.append(ip_to_location(ip))
+    return locations
 
 # function to calculate the average distance from an ip to other ips
 def average_distance(subnet_location, ip_locations):
@@ -89,15 +99,6 @@ def average_distance(subnet_location, ip_locations):
         return np.nan
     average_dist = sum(distances) / len(distances)
     return average_dist
-
-def ips_to_location(ips):
-    if type(ips) is float:
-        return np.nan
-    iplist = str.split(ips, ",")
-    locations = []
-    for ip in iplist:
-        locations.append(ip_to_location(ip))
-    return locations
 
 # enriches csv with geolocation data. Process takes times mainly because calculating distance is slow
 def create_enriched_data(csv_path: str, enr_path: str, truncate=False):
@@ -142,6 +143,6 @@ def create_enriched_data(csv_path: str, enr_path: str, truncate=False):
                            "returned-subnet", "scope", "returned-ips",
                            "ip-locations", "average-distance"]]
 
-            chunk.to_csv(ENR_SCAN_PATH, compression="gzip", index=False, mode="a", header=False, sep=";")
+            chunk.to_csv(enr_path, compression="gzip", index=False, mode="a", header=False, sep=";")
             print(f"chunk {index} completed")
     print("done creating enriched CSV file")
