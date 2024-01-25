@@ -36,6 +36,23 @@ def plot_returned_scopes(df, plot_path):
     plot.get_figure().savefig(os.path.join(plot_path, "return_scopes.png"))
 
 
+def plot_returned_scopes_non_24(df, plot_path):
+    """
+    Plot for the Distribution of Prefix lengths, but this time we only take our non /24 Subnets
+    requires "scope", "subnet-scope" and "timestamp" columns for counting <- change this
+    """
+
+    if not all(k in df for k in ("subnet-scope", "scope", "timestamp")):
+        print("Missing 'timestamp', 'scope' or 'subnet-scope' column")
+        return
+    return_scopes = df[df['subnet-scope'] != 24]
+    return_scopes = return_scopes.groupby("scope").count()
+    return_scopes = return_scopes[["timestamp"]]
+    return_scopes = return_scopes.rename(columns={"timestamp": "count"})
+    plot = return_scopes.plot.bar(y='count', legend=False)
+    plot.set_ylabel("number of responses")
+    plot.get_figure().savefig(os.path.join(plot_path, "return_scopes_non_24_input.png"))
+
 def plot_returned_scope_comparison(df, plot_path):
     """
     Plot for Prefix lengths in comparison to the input length
@@ -165,3 +182,77 @@ def plot_country_responses(df, plot_path):
     # Display the plot
     plt.show()
     plt.savefig(os.path.join(plot_path,"country_amount.png"))
+
+def plot_as_distribution_graph(df, plot_path):
+    """
+    This generates a pie chart of the distribution of AS which handles our requests that got an ECS answer
+    requires "scope", "ns-as"
+    """
+
+    if not all(k in df for k in ("scope", "ns-as")):
+        print("Missing 'ns-as' or 'scope' column")
+        return
+
+    ecs_df = df[df['scope'].notna()]
+    ecs_df = ecs_df.groupby('ns-as').count().sort_values(ascending=False, by='scope').reset_index()
+
+    wedges, labels, percentages = plt.pie(ecs_df['scope'], labels=ecs_df['ns-as'], autopct='%1.1f%%',
+                             rotatelabels = True)
+    for x in wedges[10:]:
+        x.set_visible(False)
+    for x in labels[10:]:
+        x.set_visible(False)
+    for x in percentages[3:]:
+        x.set_visible(False)
+    plt.figure(figsize=(10, 6))
+    plt.show()
+    plt.savefig(os.path.join(plot_path, "as_distribution_for_ecs_supported_servers.png"))
+
+def plot_as_distribution_graph_non_ecs(df, plot_path):
+    """
+        This generates a pie chart of the distribution of ASes which handles our requests that haven't got an ECS answer
+        requires "scope", "ns-as"
+    """
+
+    if not all(k in df for k in ("scope", "ns-as")):
+        print("Missing 'ns-as' or 'scope' column")
+        return
+
+    non_ecs_df = df[df['scope'].isna()]
+    non_ecs_df['scope'] = 1
+    non_ecs_df = non_ecs_df.groupby('ns-as').count().sort_values(ascending=False, by='scope').reset_index()
+
+    wedges, labels, percentages = plt.pie(non_ecs_df['scope'], labels=non_ecs_df['ns-as'], autopct='%1.1f%%',
+                                rotatelabels=True)
+    for x in wedges[40:]:
+        x.set_visible(False)
+    for x in labels[20:]:
+        x.set_visible(False)
+    for x in percentages[5:]:
+        x.set_visible(False)
+    plt.figure(figsize=(10, 6))
+    plt.show()
+    plt.savefig(os.path.join(plot_path, "as_distribution_for_no_ecs_servers.png"))
+
+def plot_non_zero_scope_answer_share(df, plot_path):
+
+    if not all(k in df for k in ("scope", "ns-as")):
+        print("Missing 'ns-as' or 'scope' column")
+        return
+
+    df = df[df["scope"].notna()]
+    zero_scope_df = df[df["scope"] == 0]
+    with_scope_df = df[df["scope"] != 0]
+    zero_scope_df = zero_scope_df.groupby("ns-as").count().reset_index()
+    with_scope_df = with_scope_df.groupby("ns-as").count().reset_index()
+    scope_df = zero_scope_df.merge(with_scope_df, on="ns-as", how="outer", suffixes=("-zero-count", "-non-zero-count"))
+    scope_df = scope_df.fillna(0)
+    scope_df["answer-count"] = scope_df["scope-non-zero-count"] + scope_df["scope-zero-count"]
+    scope_df["non-zero-share"] = scope_df["scope-non-zero-count"] / scope_df["answer-count"]
+    scope_df = scope_df.sort_values(by="answer-count", ascending=False)
+    scope_df = scope_df.head(30)
+
+    share_plot = scope_df.plot(x="ns-as", y="non-zero-share", kind="bar", legend=False)
+    share_plot.set_ylabel("share of ecs answer that have a scope with length of >0")
+    share_plot.set_xlabel("Autonomous System")
+    share_plot.get_figure().savefig(os.path.join(plot_path, "non_zero_answer_share.png"))
