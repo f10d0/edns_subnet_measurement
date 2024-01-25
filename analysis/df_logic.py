@@ -5,6 +5,7 @@ import geoip2.database
 import geoip2.errors
 import geopy
 from typing import Tuple
+import maxminddb
 
 # INITS
 database_cache = {}
@@ -12,7 +13,7 @@ distance_cache = {}
 
 def init_geo(geoip_db_path: str):
     global geo_reader
-    geo_reader = geoip2.database.Reader(geoip_db_path)
+    geo_reader = maxminddb.open_database(geoip_db_path)
 
 # function to load scan an "unenriched" csv
 def load_csv(csv_path, usecols=None) -> pd.DataFrame:
@@ -61,13 +62,17 @@ def ip_to_location(ip: str) -> Tuple[str, str, int]:
         return database_cache[ip]
 
     try:
-        city_resp = geo_reader.city(ip)
-    except geoip2.errors.AddressNotFoundError:
+        location_resp = geo_reader.get(ip)
+    except Exception:
+        return None, None, None, None, None
+    
+    if not location_resp:
         return None, None, None, None, None
 
     # TODO i feel like this database_cache is probably not needed
     # or is it?
-    database_cache[ip] = city_resp.location.latitude, city_resp.location.longitude, city_resp.country.iso_code, city_resp.location.accuracy_radius, city_resp.continent.code
+    #database_cache[ip] = city_resp.location.latitude, city_resp.location.longitude, city_resp.country.iso_code, city_resp.location.accuracy_radius, city_resp.continent.code
+    database_cache[ip] = None, None, location_resp.get("country"), None, location_resp.get("continent")
     return database_cache[ip]
 
 def ips_to_location(ips):
