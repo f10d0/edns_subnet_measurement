@@ -38,7 +38,7 @@ def load_enriched_csv(csv_path, usecols=None) -> pd.DataFrame:
     df = pd.read_csv(csv_path,
                      header=None,
                      sep=";",
-                     names=["timestamp", "domain", "ns-ip",
+                     names=["timestamp", "domain", "ns-ip", "ns-as",
                             "subnet", "subnet-scope", "subnet-location",
                             "returned-subnet", "scope", "returned-ips",
                             "ip-locations", "average-distance"],
@@ -46,6 +46,7 @@ def load_enriched_csv(csv_path, usecols=None) -> pd.DataFrame:
                      dtype={"timestamp": str,
                             "domain": str,
                             "ns-ip": str,
+                            "ns-as": str,
                             "subnet": str,
                             "subnet-scope": float,
                             "returned-subnet": str,
@@ -83,6 +84,16 @@ def ips_to_location(ips):
     for ip in iplist:
         locations.append(ip_to_location(ip))
     return locations
+
+def ip_to_as(ip: str) -> str:
+    try:
+        response = geo_reader.get(ip)
+    except Exception:
+        return None
+    if not response:
+        return None
+
+    return response.get("as_name")
 
 # function to calculate the average distance from an ip to other ips
 def average_distance(subnet_location, ip_locations):
@@ -141,9 +152,11 @@ def create_enriched_data(csv_path: str, enr_path: str, truncate=False):
             # chunk["average-distance"] = chunk.apply(
             #     lambda row: average_distance(row["subnet-location"], row["ip-locations"]), axis=1)
             chunk["average-distance"] = np.nan
+            chunk["ns-as"] = chunk["ns-ip"].apply(ip_to_as)
+
 
             # rearrange the columns a bit
-            chunk = chunk[["timestamp", "domain", "ns-ip",
+            chunk = chunk[["timestamp", "domain", "ns-ip", "ns-as",
                            "subnet", "subnet-scope", "subnet-location",
                            "returned-subnet", "scope", "returned-ips",
                            "ip-locations", "average-distance"]]
