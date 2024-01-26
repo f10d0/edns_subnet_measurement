@@ -87,7 +87,7 @@ def plot_distance_cdf(df, plot_path):
 
     ax.get_figure().savefig(os.path.join(plot_path, "distance_cdf.png"))
 
-def plot_continent_distribution(df, plot_path):
+def plot_continent_distribution(df, plot_path, ecs=True):
     """
     in theory this plots the frequency of how often the subnet used for a request matches its answer over all the domains
     takes dataframe with domain, scope, subnet-location, ip-locations
@@ -113,7 +113,11 @@ def plot_continent_distribution(df, plot_path):
                             match_count += 1
                             break
             return match_count
-    df = df[df["scope"].notna()]
+    
+    if ecs:
+        df = df[df["scope"].notna()]
+    else:
+        df = df[df["scope"].isna()]
     grouped = df.groupby('domain')
     match_counts = grouped.apply(process_group)
 
@@ -123,10 +127,13 @@ def plot_continent_distribution(df, plot_path):
     aggregated_counts.plot(kind='bar')
     plt.xlabel('Number of Matching Continent Codes')
     plt.ylabel('Number of Domains')
-    plt.title('Distribution of Matching Continent Codes per Domain')
-    plt.savefig(os.path.join(plot_path,"country_amount.png"))
+    if ecs:
+        plt.title('Distribution of Matching Continent Codes per Domain (ECS present)')
+        plt.savefig(os.path.join(plot_path,"continent_distribution_ecs.png"))
+    else:
+        plt.savefig(os.path.join(plot_path,"continent_distribution_noecs.png"))
 
-def plot_country_responses(df, plot_path):
+def plot_country_responses(df, plot_path, ecs=True):
     """
     this theoretically creates a graph of how many responses we get in total (excluding non ecs) per country
     takes dataframe with domain, scope, subnet-location, ip-locations
@@ -136,7 +143,11 @@ def plot_country_responses(df, plot_path):
         print("Missing columns")
         return
 
-    df = df.dropna(subset=["scope","ip-locations"])
+    if ecs:
+        df = df.dropna(subset=["scope","ip-locations"])
+    else:
+        df = df.dropna(subset=["scope"], how='any')
+        df = df.dropna(subset=["ip-locations"])
     country_amount = {}
     for _, group in df.groupby('domain'):
         for _, row in group.iterrows():
@@ -154,18 +165,21 @@ def plot_country_responses(df, plot_path):
 
     # Sort the DataFrame by the 'Amount' column in ascending order
     df = df.sort_values(by='Amount')
+    df = df[df['Amount'] >= 10000]
 
     # Create the bar plot
     plt.figure(figsize=(10, 6))  # Adjust the figure size as needed
     plt.bar(df['CountryCode'], df['Amount'], color='skyblue')
     plt.xlabel('Country Code')
     plt.ylabel('Number of A-Record Responses')
-    plt.title('Frequency of Country Responses independent of Source-Subnet')
     plt.tight_layout()
 
     # Rotate x-axis labels slightly for better readability
     plt.xticks(rotation=90)
 
-    # Display the plot
-    plt.show()
-    plt.savefig(os.path.join(plot_path,"country_amount.png"))
+    if ecs:
+        plt.title('Frequency of Country Responses independent of Source-Subnet (ECS present)')
+        plt.savefig(os.path.join(plot_path,"country_amount_ecs.png"))
+    else:
+        plt.title('Frequency of Country Responses independent of Source-Subnet (no ECS present)')
+        plt.savefig(os.path.join(plot_path,"country_amount_noecs.png"))
