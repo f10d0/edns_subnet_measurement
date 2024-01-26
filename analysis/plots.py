@@ -25,7 +25,7 @@ def plot_returned_scopes(df, plot_path):
     requires "scope" column and "timestamp" column for counting <- change this
     """
 
-    if "scope" and "timestamp" not in df.columns: # FIXME i dont think this does what it should -> if "scope" is always true
+    if not all(k in df for k in ("scope", "timestamp")):
         print("Missing 'timestamp' or 'scope' column")
         return
     return_scopes = df.groupby("scope").count()
@@ -39,15 +39,12 @@ def plot_returned_scopes(df, plot_path):
 def plot_returned_scope_comparison(df, plot_path):
     """
     Plot for Prefix lengths in comparison to the input length
-    requires "subnet", "scope"
+    requires "subnet", "scope", "subnet-scope"
     also works if "subnet" already has been split in "subnet" and "subnet-scope"
     """
-
-    if "scope" and "subnet" not in df.columns: # FIXME i dont think this does what it should
+    if not all(k in df for k in ("scope", "subnet", "subnet-scope")):
         print("Missing 'scope' or 'subnet' column")
         return
-    if "subnet-scope" not in df.columns:
-        df[["subnet", "subnet-scope"]] = df["subnet"].str.split("/", expand=True)
     scopes = df[["subnet-scope", "scope"]].dropna()
     scopes["subnet-scope"] = scopes["subnet-scope"].astype(int)
     scopes["scope"] = scopes["scope"].astype(int)
@@ -68,8 +65,7 @@ def plot_distance_cdf(df, plot_path):
     only takes domains, which got distances for at least 10 different subnets in order to filter out some outliers
     requires "average-distance" and "scope" column
     """
-
-    if "average-distance" and "scope" not in df.columns: # FIXME i dont think this does what it should
+    if not all(k in df for k in ("scope", "average-distance")):
         print("Missing 'average-distance' or 'scope' column")
         return
 
