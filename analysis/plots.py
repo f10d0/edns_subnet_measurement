@@ -32,6 +32,7 @@ def plot_returned_scopes(df, plot_path):
     return_scopes = return_scopes[["timestamp"]]
     return_scopes = return_scopes.rename(columns={"timestamp": "count"})
     plot = return_scopes.plot.bar(y='count', legend=False)
+    plot.set_title("Returned scopes in ECS responses")
     plot.set_ylabel("number of responses")
     plot.get_figure().savefig(os.path.join(plot_path, "return_scopes.png"))
 
@@ -50,6 +51,7 @@ def plot_returned_scopes_non_24(df, plot_path):
     return_scopes = return_scopes[["timestamp"]]
     return_scopes = return_scopes.rename(columns={"timestamp": "count"})
     plot = return_scopes.plot.bar(y='count', legend=False)
+    plot.set_title("Returned scopes for subnets with non /24 prefix lengths")
     plot.set_ylabel("number of responses")
     plot.get_figure().savefig(os.path.join(plot_path, "return_scopes_non_24_input.png"))
 
@@ -71,7 +73,7 @@ def plot_returned_scope_comparison(df, plot_path):
     more_specific = len(scopes[scopes["scope"] > scopes["subnet-scope"]])
     zero_specific = len(scopes[scopes["scope"] == 0])
     compare_scopes = pd.DataFrame(data={"edns response scope": [same, zero_specific, less_specific, more_specific]},
-                                  index=["same prefix length", "no prefix", "less specific prefix (none 0)", "more specific prefix"])
+                                  index=["same prefix length", "/0", "less specific prefix (none 0)", "more specific prefix"])
     plot = compare_scopes.plot.pie(y=0, legend=False, autopct='%1.1f%%')
     plot.get_figure().savefig(os.path.join(plot_path, "compare_scopes.png"))
 
@@ -270,6 +272,7 @@ def plot_non_zero_scope_answer_share(df, plot_path):
     scope_df = scope_df.head(30)
 
     share_plot = scope_df.plot(x="ns-as", y="non-zero-share", kind="bar", legend=False)
-    share_plot.set_ylabel("share of ecs answer that have a scope with length of >0")
+    share_plot.set_title("ECS non-zero scope answer share for the 20 most frequent ASes")
+    share_plot.set_ylabel("Share of ecs answer that have a non 0 scope length")
     share_plot.set_xlabel("Autonomous System")
     share_plot.get_figure().savefig(os.path.join(plot_path, "non_zero_answer_share.png"))
