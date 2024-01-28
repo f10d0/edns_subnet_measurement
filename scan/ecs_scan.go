@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"compress/gzip"
 	"encoding/csv"
+	"errors"
 	"log"
 	"math/rand"
 	"net"
@@ -32,6 +34,7 @@ type cfg_db struct {
 	Simul_ns_reqs        int    `yaml:"simul_ns_reqs"`
 	Routine_stop_timeout int    `yaml:"routine_stop_timeout"`
 	Intermediate_depth   int    `yaml:"intermediate_depth"`
+	Blocklist_path       string `yaml:"blocklist_path"`
 }
 
 var cfg cfg_db
@@ -48,6 +51,8 @@ var stop_write_chan = make(chan interface{})
 var domains []*domain_ns_pair = []*domain_ns_pair{}
 var domains_mu sync.Mutex
 var subnets = make([]*net.IPNet, 0)
+
+var blocked_nets []*net.IPNet = []*net.IPNet{}
 
 func println(lvl int, v ...any) {
 	if lvl <= cfg.Verbosity {
@@ -411,8 +416,49 @@ func pop[T ~string | interface{}](a *[]T) T {
 }
 
 func on_blocklist(server net.IP) bool {
-	// TODO blocklist ip server ip on blocklist
+	for _, blocked_net := range blocked_nets {
+		if blocked_net.Contains(server) {
+			return true
+		}
+	}
 	return false
+}
+
+func exclude_ips() {
+	if _, err := os.Stat(cfg.Blocklist_path); errors.Is(err, os.ErrNotExist) {
+		println(1, "ip exclusion list not found, skipping")
+		return
+	}
+	file, err := os.Open(cfg.Blocklist_path)
+	if err != nil {
+		panic(err)
+	}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		comment_pos := strings.IndexByte(line, '#')
+		if comment_pos == -1 {
+			comment_pos = len(line)
+		}
+		pos_net := line[:comment_pos]
+		pos_net = strings.TrimSpace(pos_net)
+		if pos_net == "" {
+			continue
+		}
+		_, new_net, err := net.ParseCIDR(pos_net)
+		if err != nil {
+			panic(err)
+		}
+		blocked_nets = append(blocked_nets, new_net)
+		println(1, "added blocked net:", new_net.String())
+	}
+
+	if err := scanner.Err(); err != nil {
+		panic(err)
+	}
 }
 
 func resolve(domain string, path []string) (answers []net.IP, nameserver net.IP) {
@@ -835,6 +881,11 @@ func query_ecs() {
 }
 
 func main() {
+	load_config()
+	exclude_ips()
+	go writeout_ns()
+	read_toplist()
+	
 	cpuFile, err := os.Create("cpu_ns.prof")
 	if err != nil {
 		panic(err)
@@ -843,10 +894,6 @@ func main() {
 	if err := pprof.StartCPUProfile(cpuFile); err != nil {
 		panic(err)
 	}
-
-	go writeout_ns()
-	load_config()
-	read_toplist()
 	query_ns()
 
 	pprof.StopCPUProfile()

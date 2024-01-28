@@ -7,3 +7,5 @@ simul_ecs_reqs: 100
 simul_ns_reqs: 50
 routine_stop_timeout: 10
 nameserver_writeout: false
+intermediate_depth: 2
+blocklist_path: blocklist.txt

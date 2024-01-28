@@ -9,3 +9,5 @@ db/
 __pycache__/
 config.yml
 subnets.txt
+top-1m.csv
+*.exe
