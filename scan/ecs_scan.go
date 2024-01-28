@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"runtime"
+	"runtime/pprof"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +31,7 @@ type cfg_db struct {
 	Simul_ecs_reqs       int    `yaml:"simul_ecs_reqs"`
 	Simul_ns_reqs        int    `yaml:"simul_ns_reqs"`
 	Routine_stop_timeout int    `yaml:"routine_stop_timeout"`
+	Intermediate_depth   int    `yaml:"intermediate_depth"`
 }
 
 var cfg cfg_db
@@ -170,9 +173,10 @@ type dns_rr struct {
 	cname string
 }
 type cache_node struct {
-	node_name string
-	next      []*cache_node
-	rr        *dns_rr
+	node_name    string
+	next         []*cache_node
+	rr           *dns_rr
+	intermediate bool
 }
 
 var cache_root cache_node = cache_node{
@@ -181,12 +185,17 @@ var cache_root cache_node = cache_node{
 	rr: &dns_rr{
 		nss: make([]string, 0),
 	},
+	intermediate: false,
 }
 
 var tree_mu sync.Mutex
 
 func (parent *cache_node) preorder(level int) {
-	println(5, "LEVEL:", level, "| name:", parent.node_name, "| nss:", parent.rr.nss, "| ips", parent.rr.ips)
+	if parent.intermediate {
+		println(5, "LEVEL:", level, "| name:", parent.node_name, "| INTERMEDIATE")
+	} else {
+		println(5, "LEVEL:", level, "| name:", parent.node_name, "| nss:", parent.rr.nss, "| ips", parent.rr.ips)
+	}
 	for _, child := range parent.next {
 		child.preorder(level + 1)
 	}
@@ -196,33 +205,62 @@ func create_node(domain string) *cache_node {
 	domain = strings.ToLower(domain)
 	domain_split := strings.Split(domain, ".")
 	next_node_name := pop(&domain_split)
+	rune_name := []rune(next_node_name)
 	cur_node := &cache_root
+	inter_pos := 0
 	for {
 		var found_node *cache_node = nil
 		for _, node := range cur_node.next {
-			if node.node_name == next_node_name {
-				found_node = node
-				break
+			if node.intermediate {
+				if inter_pos == len(rune_name) {
+					continue
+				}
+				if node.node_name == string(rune_name[inter_pos]) {
+					found_node = node
+					break
+				}
+			} else {
+				if node.node_name == next_node_name {
+					found_node = node
+					break
+				}
 			}
 		}
 		// if we couldnt find the node
 		if found_node == nil {
-			// we need to create it
-			found_node = &cache_node{
-				node_name: next_node_name,
-				next:      make([]*cache_node, 0),
-				rr: &dns_rr{
-					ips: make([]net.IP, 0),
-				},
+			// if either the max intermediate depth is reached or the rune name is exhausted -> create a normal node
+			if cfg.Intermediate_depth == inter_pos || inter_pos == len(rune_name) {
+				// we need to create it
+				found_node = &cache_node{
+					node_name: next_node_name,
+					next:      make([]*cache_node, 0),
+					rr: &dns_rr{
+						ips: make([]net.IP, 0),
+					},
+					intermediate: false,
+				}
+			} else {
+				found_node = &cache_node{
+					node_name:    string(rune_name[inter_pos]),
+					next:         make([]*cache_node, 0),
+					rr:           nil,
+					intermediate: true,
+				}
 			}
 			// and add it to the current node's next list
 			cur_node.next = append(cur_node.next, found_node)
 		}
 		// then we need set the found or created node as cur_node for next it
 		cur_node = found_node
+		if found_node.intermediate {
+			inter_pos += 1
+			continue
+		}
 		// and pop one from the domain split
 		if len(domain_split) != 0 {
 			next_node_name = pop(&domain_split)
+			rune_name = []rune(next_node_name)
+			inter_pos = 0
 		} else {
 			break
 		}
@@ -237,8 +275,10 @@ func get_node(domain string) (node *cache_node, final bool) {
 	// we get the node iteratively
 	domain_split := strings.Split(domain, ".")
 	next_node_name := pop(&domain_split)
+	rune_name := []rune(next_node_name)
 	cur_node := &cache_root
 	last_ns_node := &cache_root
+	inter_pos := 0
 	// okay hear me out: there is the possibility that a node that is deeper in the
 	// tree doesnt provide us with any useful information at all
 	// e.g. the following case
@@ -255,13 +295,26 @@ func get_node(domain string) (node *cache_node, final bool) {
 	for {
 		var found_node *cache_node = nil
 		for _, node := range cur_node.next {
-			if node.node_name == next_node_name {
-				found_node = node
-				break
+			if node.intermediate {
+				if inter_pos == len(rune_name) {
+					continue
+				}
+				if node.node_name == string(rune_name[inter_pos]) {
+					found_node = node
+					break
+				}
+			} else {
+				if node.node_name == next_node_name {
+					found_node = node
+					break
+				}
 			}
 		}
 		// if we couldnt find the node, we go home
 		if found_node == nil {
+			if cur_node.intermediate {
+				return last_ns_node, false
+			}
 			if len(cur_node.rr.nss) == 0 {
 				return last_ns_node, false
 			}
@@ -269,12 +322,18 @@ func get_node(domain string) (node *cache_node, final bool) {
 		}
 		// otherwise we need set the found or created node as cur_node for next it
 		cur_node = found_node
+		if found_node.intermediate {
+			inter_pos += 1
+			continue
+		}
 		if len(found_node.rr.nss) != 0 {
 			last_ns_node = found_node
 		}
 		// and pop one from the domain split
 		if len(domain_split) != 0 {
 			next_node_name = pop(&domain_split)
+			rune_name = []rune(next_node_name)
+			inter_pos = 0
 		} else {
 			break
 		}
@@ -356,10 +415,10 @@ func on_blocklist(server net.IP) bool {
 	return false
 }
 
-func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) {
+func resolve(domain string, path []string) (answers []net.IP, nameserver net.IP) {
 	domain = strings.ToLower(domain)
-	道 = append(道, domain)
-	if len(道) > 50 {
+	path = append(path, domain)
+	if len(path) > 50 {
 		println(3, "maximum depth exceeded for", domain)
 		return nil, nil
 	}
@@ -384,7 +443,7 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 	// should the domain be cnamed we just go from there
 	if cache_cname != "" {
 		println(4, "cached cname found", domain, "points to", cache_cname)
-		return resolve(cache_cname, 道)
+		return resolve(cache_cname, path)
 	}
 	// otherwise we question the cache if we know one of the ips of the provided nameservers
 	// theoretically we could call resolve again here with one randomly chosen nameserver,
@@ -414,16 +473,14 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 	} else if len(cache_nss) != 0 {
 		// in case we dont, we need to query the domain and therefore we need the resolved ns
 		ns := cache_nss[rand.Intn(len(cache_nss))]
-		ns_ips, _ := resolve(ns, 道)
+		ns_ips, _ := resolve(ns, path)
 		if len(ns_ips) != 0 {
 			// we now know the ns ip but not the domain ip
 			server = ns_ips[rand.Intn(len(ns_ips))]
 		} else {
-			// at this point for whatever reason the cached nameserver is no longer existent
-			// we can continue to query normally without caching
-			// but technically we would have to remove the failing cache entry as well TODO
-			// and we could also try the others we might have cached but well ...
+			// at this point for whatever reason the cached nameserver is not existent
 			println(4, "no ip for cached ns found", ns)
+			return nil, nil
 		}
 	}
 	if on_blocklist(server) {
@@ -453,20 +510,20 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 			switch ans := ans.(type) {
 			case *dns.A:
 				answers = append(answers, ans.A)
-				if 道[0] != domain { // dont need to cache the original domain, as it is only looked up once
+				if path[0] != domain { // dont need to cache the original domain, as it is only looked up once
 					cache_update_a(domain, ans.A)
 				}
 			case *dns.CNAME:
 				println(4, "found CNAME", ans.Target, "for", domain)
 				cname = ans.Target[:len(ans.Target)-1]
-				if 道[0] != domain {
+				if path[0] != domain {
 					cache_update_cname(domain, cname)
 				}
 			}
 		}
 		// no ip answers -> check the cname
 		if len(answers) == 0 && cname != "" {
-			return resolve(cname, 道)
+			return resolve(cname, path)
 		}
 		println(4, "resolve found answers", answers, "for domain", domain)
 		return answers, server
@@ -493,6 +550,12 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 			cache_update_ns(related_domain, ns_name)
 		}
 	}
+	/*for _, alr_domain := range path {
+		if slices.Contains(new_ns_names, alr_domain) {
+			println(3, "path already contains nameserver", alr_domain)
+			return nil, nil
+		}
+	}*/
 	println(4, "found next pos nameserver", new_ns_names, "related domain", related_domain)
 
 	// if there is data in the additional section we take those
@@ -513,7 +576,7 @@ func resolve(domain string, 道 []string) (answers []net.IP, nameserver net.IP) 
 	}
 
 	if len(new_ns_names) != 0 {
-		return resolve(domain, 道)
+		return resolve(domain, path)
 	}
 	return nil, nil
 }
@@ -580,7 +643,7 @@ func ecs_query(domain string, nsip net.IP, subnet *net.IPNet) (answers []net.IP,
 		}
 	}
 
-	return nil, nil, nil
+	return answers, nil, nil
 }
 
 func read_subnets() {
@@ -772,11 +835,22 @@ func query_ecs() {
 }
 
 func main() {
-	println(1, "starting program")
+	cpuFile, err := os.Create("cpu_ns.prof")
+	if err != nil {
+		panic(err)
+	}
+	runtime.SetCPUProfileRate(200)
+	if err := pprof.StartCPUProfile(cpuFile); err != nil {
+		panic(err)
+	}
+
 	go writeout_ns()
 	load_config()
 	read_toplist()
 	query_ns()
+
+	pprof.StopCPUProfile()
+	cpuFile.Close()
 	//debug
 	println(5, "<=====PREORDER CACHE TREE=====")
 	if cfg.Verbosity >= 5 {
@@ -786,7 +860,21 @@ func main() {
 	// flush the dns cache tree as we dont need it any longer
 	// all the relevant nameservers are stored as domain_ns_pair
 	cache_root.next = make([]*cache_node, 0)
+
+	cpuFile, err = os.Create("cpu_ecs.prof")
+	if err != nil {
+		panic(err)
+	}
+	runtime.SetCPUProfileRate(200)
+	if err := pprof.StartCPUProfile(cpuFile); err != nil {
+		panic(err)
+	}
+
 	query_ecs()
+
+	pprof.StopCPUProfile()
+	cpuFile.Close()
+
 	time.Sleep(5 * time.Second)
 	close(stop_write_chan)
 	time.Sleep(5 * time.Second) // wait to write all data completely to file
