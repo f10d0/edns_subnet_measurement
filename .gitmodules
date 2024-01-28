@@ -1,0 +1,3 @@
+[submodule "scan/blocklist"]
+	path = scan/blocklist
+	url = https://github.com/netd-tud/active-measurements-blocklists.git
