@@ -35,12 +35,12 @@ In our Approach, we will query authoritative nameservers for A records with diff
 - this was done with the free version of the [ipinfo.io](https://ipinfo.io/) database which can be downloaded after sign-up on their website (in `.mmdb` MaxMind database format)
 - be aware that using any other database will probably need code adjustments as the formats might differ
 
-5. create a python venv in the root of this project & and install the python requirements
+5. create a python venv in the root of this project & install the python requirements
 
    `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
 
 6. open the jupyter notebook `analysis/graphs.ipynb` & set the paths to the database, scan files & plots how you like
 
-7. run the cells you want to generate the plots (first two cells are mandatory)
+7. run the cells you want to generate the plots for (first two cells are mandatory)
 
-**Keep in mind that this will generate a lot of DNS-Requests with high packet rate and should probably not be run from a network that was not made for this kind of scan**
+**Keep in mind that this scan will send a lot of DNS-Requests with high packet rate and should probably not be run from a network that was not made for this kind of scan**
