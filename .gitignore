@@ -11,3 +11,4 @@ config.yml
 subnets.txt
 top-1m.csv
 *.exe
+*.zip

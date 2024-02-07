@@ -105,7 +105,7 @@ def plot_distance_cdf(df: pd.DataFrame, plot_path: str):
 
 def plot_continent_matches(df: pd.DataFrame, plot_path: str, ecs=True):
     """
-    in theory this plots the frequency of how often the subnet used for a request matches its answer over all the domains
+    plots the frequency of how often the subnet used for a request matches its answer over all the domains
     takes dataframe with domain, scope, subnet-location, ip-locations
     """
 
@@ -152,7 +152,7 @@ def plot_continent_matches(df: pd.DataFrame, plot_path: str, ecs=True):
 
 def plot_continent_distribution(df: pd.DataFrame, plot_path: str, ecs=True):
     """
-    this will create a plot where we count how many domains have a response in which continents (matching the original subnet's continent)
+    will create a plot where we count how many domains have a response in which continents (matching the original subnet's continent)
     essentially this will tell how well the domains are distributed across continents
     """
 
@@ -202,7 +202,7 @@ def plot_continent_distribution(df: pd.DataFrame, plot_path: str, ecs=True):
 
 def plot_country_responses(df: pd.DataFrame, plot_path: str, ecs=True):
     """
-    this theoretically creates a graph of how many responses we get in total (excluding non ecs) per country
+    creates a graph of how many responses we get in total per country
     takes dataframe with domain, scope, subnet-location, ip-locations
     """
 
@@ -232,7 +232,7 @@ def plot_country_responses(df: pd.DataFrame, plot_path: str, ecs=True):
 
     # Sort the DataFrame by the 'Amount' column in ascending order
     df = df.sort_values(by='Amount')
-    df = df[df['Amount'] >= 10000]
+    df = df[df['Amount'] >= 50000]
 
     # Create the bar plot
     plt.figure(figsize=(10, 6))  # Adjust the figure size as needed
@@ -250,9 +250,6 @@ def plot_country_responses(df: pd.DataFrame, plot_path: str, ecs=True):
     else:
         plt.title('Frequency of Country Responses independent of Source-Subnet (no ECS present)')
         plt.savefig(os.path.join(plot_path,"country_amount_noecs.png"))
-    # Display the plot
-    plt.show()
-    plt.savefig(os.path.join(plot_path,"country_amount.png"))
 
 def plot_as_distribution_graph(df: pd.DataFrame, plot_path: str):
     """

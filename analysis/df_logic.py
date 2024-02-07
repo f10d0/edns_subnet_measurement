@@ -1,11 +1,11 @@
 import numpy as np
 import pandas as pd
 import os
-import geoip2.database
-import geoip2.errors
 import geopy
 from typing import Tuple
 import maxminddb
+import csv
+import gzip
 
 # INITS
 database_cache = {}
@@ -164,3 +164,18 @@ def create_enriched_data(csv_path: str, enr_path: str, truncate=False):
             chunk.to_csv(enr_path, compression="gzip", index=False, mode="a", header=False, sep=";")
             print(f"chunk {index} completed")
     print("done creating enriched CSV file")
+
+def drop_cloudflare_csv(enr_csv_path, filtered_csv_path, truncate=False):
+    if os.path.exists(filtered_csv_path):
+        if truncate:
+            print("truncating filtered enriched CSV file")
+            os.unlink(filtered_csv_path)
+        else:
+            print("filtered enriched CSV file already exists")
+            return
+    
+    with gzip.open(enr_csv_path, 'rt', encoding="utf-8") as input_file:
+        with gzip.open(filtered_csv_path, "wt", encoding="utf-8") as out_file:
+            while line := input_file.readline():
+                if "Cloudflare" not in line:
+                    out_file.write(line)
