@@ -31,8 +31,19 @@ def plot_returned_scopes(df: pd.DataFrame, plot_path: str):
         return
     return_scopes = df.groupby("scope").count()
     return_scopes = return_scopes[["timestamp"]]
+
+    return_scopes = return_scopes.reset_index()
+    return_scopes["scope"] = return_scopes["scope"].astype(int)
+
+    tmp_df = {"scope":[i+1 for i in range(32)], "timestamp":[0 for i in range(32)]}
+    tmp_df = pd.DataFrame(data=tmp_df)
+
+    return_scopes = pd.concat([return_scopes, tmp_df], ignore_index=True)
+
+    return_scopes = return_scopes.groupby("scope").sum().reset_index()
+
     return_scopes = return_scopes.rename(columns={"timestamp": "count"})
-    plot = return_scopes.plot.bar(y='count', legend=False)
+    plot = return_scopes.plot.bar(x='scope', y='count', legend=False)
     plot.set_title("Returned scopes in ECS responses")
     plot.set_ylabel("number of responses")
     plot.get_figure().savefig(os.path.join(plot_path, "return_scopes.png"))
@@ -50,8 +61,20 @@ def plot_returned_scopes_non_24(df: pd.DataFrame, plot_path: str):
     return_scopes = df[df['subnet-scope'] != 24]
     return_scopes = return_scopes.groupby("scope").count()
     return_scopes = return_scopes[["timestamp"]]
+
+    return_scopes = return_scopes.reset_index()
+    return_scopes["scope"] = return_scopes["scope"].astype(int)
+
+    tmp_df = {"scope":[i+1 for i in range(32)], "timestamp":[0 for i in range(32)]}
+    tmp_df = pd.DataFrame(data=tmp_df)
+
+    return_scopes = pd.concat([return_scopes, tmp_df], ignore_index=True)
+
+    return_scopes = return_scopes.groupby("scope").sum().reset_index()
+
+
     return_scopes = return_scopes.rename(columns={"timestamp": "count"})
-    plot = return_scopes.plot.bar(y='count', legend=False)
+    plot = return_scopes.plot.bar(x='scope',y='count', legend=False)
     plot.set_title("Returned scopes for subnets with non /24 prefix lengths")
     plot.set_ylabel("number of responses")
     plot.get_figure().savefig(os.path.join(plot_path, "return_scopes_non_24_input.png"))
